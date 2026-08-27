@@ -4,8 +4,9 @@
 //! Applies pragmas, verifies SQLite version, runs migrations, and exposes
 //! repository access. No other module should call `Connection::open` directly.
 
+#![forbid(unsafe_code)]
+
 use rusqlite::Connection;
-use std::cell::UnsafeCell;
 use std::path::{Path, PathBuf};
 
 use super::config;
@@ -17,13 +18,11 @@ use super::transaction::Transaction;
 /// The central persistence handle. Owns the SQLite connection and provides
 /// transactional access to all repositories.
 ///
-/// Uses `UnsafeCell` to allow `Transaction::begin(&self)` to obtain a
-/// `&mut Connection` from `&self`. This is sound because:
-/// - `SqliteStore` is not `Sync` (cannot be shared across threads).
-/// - Only one `Transaction` can be live at a time (borrows `&self` exclusively via `'conn`).
-/// - SQLite WAL guarantees single-writer semantics at the engine level.
+/// Mutating operations (`transaction`) require `&mut self`, enforcing exclusive
+/// access at compile time without any `unsafe` interior mutability.
+/// Read-only operations (`conn`, `schema_version`, `path`) accept `&self`.
 pub struct SqliteStore {
-    conn: UnsafeCell<Connection>,
+    conn: Connection,
     db_path: PathBuf,
 }
 
@@ -74,7 +73,7 @@ impl SqliteStore {
         migrations::run_migrations(&mut conn)?;
 
         Ok(Self {
-            conn: UnsafeCell::new(conn),
+            conn,
             db_path: path.to_path_buf(),
         })
     }
@@ -90,24 +89,19 @@ impl SqliteStore {
         config::apply_and_verify_pragmas(&conn)?;
         migrations::run_migrations(&mut conn)?;
         Ok(Self {
-            conn: UnsafeCell::new(conn),
+            conn,
             db_path: PathBuf::from(":memory:"),
         })
     }
 
-    /// Begin a new transaction.
-    pub fn transaction(&self) -> Result<Transaction<'_>, PersistenceError> {
-        // SAFETY: SqliteStore is !Send + !Sync. Only one Transaction can borrow
-        // self at a time. The returned Transaction holds &'_ self, preventing
-        // concurrent access through Rust's borrow checker.
-        Transaction::begin(unsafe { &mut *self.conn.get() })
+    /// Begin a new transaction. Requires exclusive access (`&mut self`).
+    pub fn transaction(&mut self) -> Result<Transaction<'_>, PersistenceError> {
+        Transaction::begin(&mut self.conn)
     }
 
     /// Access the underlying connection for read-only queries outside transactions.
     pub fn conn(&self) -> &Connection {
-        // SAFETY: No mutable borrow can coexist with this shared reference
-        // because Transaction borrows &mut self exclusively via 'conn lifetime.
-        unsafe { &*self.conn.get() }
+        &self.conn
     }
 
     /// Return the path this store was opened with.
@@ -117,9 +111,7 @@ impl SqliteStore {
 
     /// Return the current schema version stored in the database.
     pub fn schema_version(&self) -> Result<i64, PersistenceError> {
-        // SAFETY: No mutable borrow can coexist with this shared reference
-        // because Transaction borrows &mut self exclusively via 'conn lifetime.
-        schema_version::read_schema_version(unsafe { &*self.conn.get() })
+        schema_version::read_schema_version(&self.conn)
     }
 }
 
@@ -142,7 +134,7 @@ mod tests {
 
         // First open: create + migrate
         {
-            let store = SqliteStore::open(&db_path).expect("first open must succeed");
+            let mut store = SqliteStore::open(&db_path).expect("first open must succeed");
             let tx = store.transaction().unwrap();
             tx.conn()
                 .execute(
@@ -193,44 +185,64 @@ mod tests {
         let store = SqliteStore::open_in_memory().unwrap();
         let result = store.conn().execute(
             "INSERT INTO runs (id, project_id, objective, status, version, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params!["run-1", "nonexistent-project", "obj", "DRAFT", 1i64, 1000i64, 1000i64],
+            rusqlite::params!["run-orphan", "nonexistent-project", "test", "pending", 1i64, 0i64, 0i64],
         );
-        assert!(result.is_err(), "FK violation must be rejected");
+        assert!(
+            result.is_err(),
+            "FK constraint must reject orphan run insert"
+        );
     }
 
     #[test]
     fn duplicate_command_id_is_rejected() {
-        let store = SqliteStore::open_in_memory().unwrap();
-        store
-            .conn()
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let tx = store.transaction().unwrap();
+        tx.conn()
             .execute(
                 "INSERT INTO commands (command_id, command_type, payload_hash, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params!["cmd-1", "TestCmd", "hash-abc", "PENDING", 1000i64],
+                rusqlite::params!["cmd-1", "CreateProject", "hash-aaa", "SUCCEEDED", 0i64],
             )
             .unwrap();
+        tx.commit().unwrap();
 
-        let result = store.conn().execute(
+        let tx2 = store.transaction().unwrap();
+        let result = tx2.conn().execute(
             "INSERT INTO commands (command_id, command_type, payload_hash, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["cmd-1", "OtherCmd", "hash-def", "PENDING", 2000i64],
+            rusqlite::params!["cmd-1", "CreateRun", "hash-bbb", "RECEIVED", 0i64],
         );
-        assert!(result.is_err(), "duplicate command_id must be rejected");
+        assert!(
+            result.is_err(),
+            "duplicate command_id must be rejected by PK constraint"
+        );
     }
 
     #[test]
     fn self_dependency_is_rejected() {
-        let store = SqliteStore::open_in_memory().unwrap();
-
-        // Need a project → run → task first
-        store
-            .conn()
-            .execute_batch(
-                "INSERT INTO projects (id, name, repository_identity, canonical_path, target_branch, created_at, updated_at, version) VALUES ('p1', 'P', 'fp', '/p', 'main', 0, 0, 1);
-                 INSERT INTO runs (id, project_id, objective, status, version, created_at, updated_at) VALUES ('r1', 'p1', 'obj', 'DRAFT', 1, 0, 0);
-                 INSERT INTO tasks (id, run_id, title, objective, status, priority, version, created_at, updated_at) VALUES ('t1', 'r1', 'T', 'obj', 'CREATED', 0, 1, 0, 0);",
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        // Insert a task first so FK is satisfied
+        let tx = store.transaction().unwrap();
+        tx.conn()
+            .execute(
+                "INSERT INTO projects (id, name, repository_identity, canonical_path, target_branch, created_at, updated_at, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params!["p1", "P", "fp", "/p", "main", 0i64, 0i64, 1i64],
             )
             .unwrap();
+        tx.conn()
+            .execute(
+                "INSERT INTO runs (id, project_id, objective, status, version, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params!["r1", "p1", "obj", "pending", 1i64, 0i64, 0i64],
+            )
+            .unwrap();
+        tx.conn()
+            .execute(
+                "INSERT INTO tasks (id, run_id, title, objective, status, priority, version, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params!["t1", "r1", "Test Task", "obj", "CREATED", 0i64, 1i64, 0i64, 0i64],
+            )
+            .unwrap();
+        tx.commit().unwrap();
 
-        let result = store.conn().execute(
+        let tx2 = store.transaction().unwrap();
+        let result = tx2.conn().execute(
             "INSERT INTO task_dependencies (task_id, depends_on_task_id, reason, created_at) VALUES (?1, ?1, ?2, ?3)",
             rusqlite::params!["t1", "self-ref", 0i64],
         );
@@ -242,30 +254,35 @@ mod tests {
 
     #[test]
     fn transaction_rollback_on_error() {
-        let store = SqliteStore::open_in_memory().unwrap();
+        let mut store = SqliteStore::open_in_memory().unwrap();
 
+        // Create a test table
+        store
+            .conn()
+            .execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT NOT NULL);")
+            .unwrap();
+
+        // Attempt a transaction where second insert fails
         let result = (|| -> Result<(), PersistenceError> {
             let tx = store.transaction()?;
             tx.conn()
-                .execute(
-                    "INSERT INTO projects (id, name, repository_identity, canonical_path, target_branch, created_at, updated_at, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    rusqlite::params!["p1", "P", "fp", "/p", "main", 0i64, 0i64, 1i64],
-                )
+                .execute("INSERT INTO t (id, val) VALUES (1, 'a')", [])
                 .map_err(|e| PersistenceError::Transaction { source: e })?;
-            // Force error
+            // This violates NOT NULL
             tx.conn()
-                .execute("INSERT INTO nonexistent_table VALUES (1)", [])
+                .execute("INSERT INTO t (id, val) VALUES (2, NULL)", [])
                 .map_err(|e| PersistenceError::Transaction { source: e })?;
             tx.commit()
         })();
 
         assert!(result.is_err());
 
+        // Verify rollback: no rows should exist
         let count: i64 = store
             .conn()
-            .query_row("SELECT COUNT(*) FROM projects;", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM t;", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 0, "project insert must be rolled back");
+        assert_eq!(count, 0, "failed transaction must roll back all changes");
     }
 
     #[test]
@@ -273,24 +290,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("wal_test.db");
 
-        let store_a = SqliteStore::open(&db_path).unwrap();
-        let store_b = SqliteStore::open(&db_path).unwrap();
+        let mut store = SqliteStore::open(&db_path).unwrap();
 
-        // Writer A inserts
-        let tx = store_a.transaction().unwrap();
+        // Write some data
+        let tx = store.transaction().unwrap();
         tx.conn()
             .execute(
                 "INSERT INTO projects (id, name, repository_identity, canonical_path, target_branch, created_at, updated_at, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                rusqlite::params!["p1", "P", "fp", "/p", "main", 0i64, 0i64, 1i64],
+                rusqlite::params!["wal-proj", "WAL Test", "fp-wal", "/wal", "main", 0i64, 0i64, 1i64],
             )
             .unwrap();
         tx.commit().unwrap();
 
-        // Reader B can see it
-        let count: i64 = store_b
-            .conn()
-            .query_row("SELECT COUNT(*) FROM projects;", [], |r| r.get(0))
+        // Open a second read-only connection while store is still alive
+        let reader = Connection::open(&db_path).unwrap();
+        let name: String = reader
+            .query_row(
+                "SELECT name FROM projects WHERE id = ?1",
+                ["wal-proj"],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(name, "WAL Test");
     }
 }

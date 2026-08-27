@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn insert_and_get_by_id() {
-        let store = SqliteStore::open_in_memory().unwrap();
+        let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
         let p = make_project("proj-1");
         ProjectRepository::insert(&tx, &p).unwrap();
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn get_by_id_returns_none_for_missing() {
-        let store = SqliteStore::open_in_memory().unwrap();
+        let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
         let result = ProjectRepository::get_by_id(&tx, &ProjectId::from("nonexistent")).unwrap();
         assert!(result.is_none());
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn duplicate_insert_is_rejected() {
-        let store = SqliteStore::open_in_memory().unwrap();
+        let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
         let p = make_project("proj-dup");
         ProjectRepository::insert(&tx, &p).unwrap();
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn update_with_correct_version_succeeds() {
-        let store = SqliteStore::open_in_memory().unwrap();
+        let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
         let mut p = make_project("proj-upd");
         ProjectRepository::insert(&tx, &p).unwrap();
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn update_with_stale_version_returns_conflict() {
-        let store = SqliteStore::open_in_memory().unwrap();
+        let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
         let p = make_project("proj-stale");
         ProjectRepository::insert(&tx, &p).unwrap();
