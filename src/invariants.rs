@@ -1,8 +1,8 @@
-/// Mega Brain V0 — Invariant Definitions (INV-001 through INV-036)
-///
-/// Each invariant is a compile-time constant with a unique ID, human-readable
-/// statement matching the blueprint, and an associated test function name.
-/// Violations are detected by automated tests and PR gates.
+//! Mega Brain V0 — Invariant Definitions (INV-001 through INV-036)
+//!
+//! Each invariant is a compile-time constant with a unique ID, human-readable
+//! statement matching the blueprint, and an associated test function name.
+//! Violations are detected by automated tests and PR gates.
 
 /// A single architectural invariant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,11 +239,7 @@ mod tests {
     #[test]
     fn all_statements_are_non_empty() {
         for inv in INVARIANTS {
-            assert!(
-                !inv.statement.is_empty(),
-                "{} has empty statement",
-                inv.id
-            );
+            assert!(!inv.statement.is_empty(), "{} has empty statement", inv.id);
         }
     }
 
@@ -251,11 +247,7 @@ mod tests {
     fn all_test_fn_names_are_non_empty_and_unique() {
         let mut seen = std::collections::HashSet::new();
         for inv in INVARIANTS {
-            assert!(
-                !inv.test_fn.is_empty(),
-                "{} has empty test_fn",
-                inv.id
-            );
+            assert!(!inv.test_fn.is_empty(), "{} has empty test_fn", inv.id);
             assert!(
                 seen.insert(inv.test_fn),
                 "{} has duplicate test_fn: {}",

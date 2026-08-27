@@ -1,8 +1,8 @@
-/// Mega Brain V0 — Architecture Constitution
-///
-/// These are product invariants, not suggestions. Every implementation decision
-/// must be traceable to one or more of these principles. Violations are rejected
-/// at PR review regardless of functional correctness.
+//! Mega Brain V0 — Architecture Constitution
+//!
+//! These are product invariants, not suggestions. Every implementation decision
+//! must be traceable to one or more of these principles. Violations are rejected
+//! at PR review regardless of functional correctness.
 
 /// The seven foundational constitutional principles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,8 +77,12 @@ impl AntiPattern {
     /// Returns a human-readable description matching the blueprint wording.
     pub fn description(&self) -> &'static str {
         match self {
-            Self::AgentToAgentChatAsAuthority => "agent-to-agent chat as authoritative workflow state",
-            Self::SharedMutableWorkingTree => "shared mutable working tree between active coding agents",
+            Self::AgentToAgentChatAsAuthority => {
+                "agent-to-agent chat as authoritative workflow state"
+            }
+            Self::SharedMutableWorkingTree => {
+                "shared mutable working tree between active coding agents"
+            }
             Self::TaskStatusFromTerminalParsing => "Task status controlled by terminal parsing",
             Self::ProviderSpecificFieldsInCoreTask => "provider-specific fields in core Task state",
             Self::UiOwnedSchedulerState => "UI-owned scheduler state",
@@ -89,8 +93,12 @@ impl AntiPattern {
             Self::PidOnlyProcessOwnership => "PID-only process ownership",
             Self::ImplicitGlobalWriteScope => "implicit global write scope",
             Self::NonAtomicCriticalJsonRewrite => "critical JSON state rewritten non-atomically",
-            Self::NewSideEffectWithoutRecoverySemantics => "new side effect without recovery semantics",
-            Self::NewStatusWithoutExhaustiveConsequenceMapping => "new status without exhaustive consequence mapping",
+            Self::NewSideEffectWithoutRecoverySemantics => {
+                "new side effect without recovery semantics"
+            }
+            Self::NewStatusWithoutExhaustiveConsequenceMapping => {
+                "new status without exhaustive consequence mapping"
+            }
         }
     }
 }
@@ -126,19 +134,31 @@ impl FreezeChecklistItem {
             Self::StateMachinesMd => "STATE-MACHINES.md",
             Self::InvariantsMd => "INVARIANTS.md",
             Self::Adr0001RustHubSqliteGitCli => "ADR-0001: Rust Hub + SQLite + Git CLI",
-            Self::Adr0002IsolatedWorktreePerAttempt => "ADR-0002: isolated worktree per writing Attempt",
-            Self::Adr0003CommandEventOperationSeparation => "ADR-0003: Command/Event/Operation separation",
+            Self::Adr0002IsolatedWorktreePerAttempt => {
+                "ADR-0002: isolated worktree per writing Attempt"
+            }
+            Self::Adr0003CommandEventOperationSeparation => {
+                "ADR-0003: Command/Event/Operation separation"
+            }
             Self::Adr0004LeasesAndFencingTokens => "ADR-0004: leases + fencing tokens",
             Self::Adr0005ObservedVsReportedState => "ADR-0005: observed vs reported state",
-            Self::Adr0006IndependentVerificationReview => "ADR-0006: independent verification/review",
-            Self::Adr0007MergeLabAndSerializedQueue => "ADR-0007: Merge Laboratory + serialized Merge Queue",
+            Self::Adr0006IndependentVerificationReview => {
+                "ADR-0006: independent verification/review"
+            }
+            Self::Adr0007MergeLabAndSerializedQueue => {
+                "ADR-0007: Merge Laboratory + serialized Merge Queue"
+            }
             Self::Adr0008McpAsAdapterNotCore => "ADR-0008: MCP as adapter, not core",
-            Self::Adr0009ProviderManifestsNativeAdapters => "ADR-0009: provider manifests + native adapters",
+            Self::Adr0009ProviderManifestsNativeAdapters => {
+                "ADR-0009: provider manifests + native adapters"
+            }
             Self::Adr0010ReconcileOnStartup => "ADR-0010: Reconcile on startup",
             Self::PinToolchainVersions => "Pin toolchain versions",
             Self::DefineWindowsCiLane => "Define Windows CI lane from day one",
             Self::DefineLinuxCiLane => "Define Linux CI lane from day one",
-            Self::AddMacosLaneWhenPtyWorktreeBegins => "Add macOS lane when PTY/worktree layer begins",
+            Self::AddMacosLaneWhenPtyWorktreeBegins => {
+                "Add macOS lane when PTY/worktree layer begins"
+            }
         }
     }
 }
@@ -191,7 +211,11 @@ mod tests {
             FreezeChecklistItem::DefineLinuxCiLane,
             FreezeChecklistItem::AddMacosLaneWhenPtyWorktreeBegins,
         ];
-        assert_eq!(items.len(), 17, "Freeze checklist must have exactly 17 items per Appendix Q");
+        assert_eq!(
+            items.len(),
+            17,
+            "Freeze checklist must have exactly 17 items per Appendix Q"
+        );
     }
 
     #[test]
@@ -205,7 +229,11 @@ mod tests {
             ConstitutionalPrinciple::NoSelfCertification,
             ConstitutionalPrinciple::UnknownRemainsUnknown,
         ];
-        assert_eq!(principles.len(), 7, "Seven constitutional principles per Section 1.1");
+        assert_eq!(
+            principles.len(),
+            7,
+            "Seven constitutional principles per Section 1.1"
+        );
     }
 
     #[test]
@@ -226,6 +254,10 @@ mod tests {
             NonNegotiablePrinciple::JournalAllSideEffects,
             NonNegotiablePrinciple::ClassifyFailures,
         ];
-        assert_eq!(principles.len(), 13, "Non-negotiable principles 8-20 = 13 items per Section 1.2");
+        assert_eq!(
+            principles.len(),
+            13,
+            "Non-negotiable principles 8-20 = 13 items per Section 1.2"
+        );
     }
 }
