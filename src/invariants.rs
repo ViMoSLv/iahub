@@ -53,8 +53,8 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-004",
         statement: "Every external side effect has a corresponding operations journal entry before execution.",
-        test_fn: "test_inv_004_journal_before_side_effect",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "operations::service::tests::prepare_persists_before_execution",
+        coverage: InvariantCoverage::Partial,
     },
     Invariant {
         id: "INV-005",
@@ -146,8 +146,8 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-019",
         statement: "Every external side effect produces a durable journal entry recoverable after crash.",
-        test_fn: "test_inv_019_journal_all_side_effects",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "operations::service::tests::requires_reconcile_survives_restart_and_resolves",
+        coverage: InvariantCoverage::Partial,
     },
     Invariant {
         id: "INV-020",

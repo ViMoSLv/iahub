@@ -2,6 +2,9 @@
 //!
 //! Persistence operations for the `operations` table. All access goes through
 //! this module; no raw SQL in service logic.
+//!
+//! Status and operation_type are stored as canonical unquoted TEXT strings
+//! (e.g., "PREPARED", "CREATE_WORKTREE"), NOT JSON-encoded strings.
 
 use rusqlite::params;
 use rusqlite::OptionalExtension;
@@ -12,15 +15,6 @@ use crate::persistence::transaction::Transaction;
 
 /// Insert a new PREPARED operation entry. MUST be called before any side effect.
 pub fn insert_operation(tx: &Transaction, record: &OperationRecord) -> Result<(), OperationError> {
-    let op_type =
-        serde_json::to_string(&record.operation_type).map_err(|e| OperationError::Persistence {
-            message: format!("failed to serialize operation_type: {}", e),
-        })?;
-    let status =
-        serde_json::to_string(&record.status).map_err(|e| OperationError::Persistence {
-            message: format!("failed to serialize status: {}", e),
-        })?;
-
     tx.conn()
         .execute(
             "INSERT INTO operations (
@@ -31,8 +25,8 @@ pub fn insert_operation(tx: &Transaction, record: &OperationRecord) -> Result<()
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 record.id.0,
-                op_type,
-                status,
+                record.operation_type.to_db(),
+                record.status.to_db(),
                 record.project_id,
                 record.task_id,
                 record.attempt_id,
@@ -98,11 +92,16 @@ pub struct StatusUpdate {
 /// Update an operation's status with optimistic concurrency control.
 /// Returns the new version on success.
 pub fn update_status(tx: &Transaction, update: &StatusUpdate) -> Result<i64, OperationError> {
-    let new_version = update.expected_version + 1;
-    let status_json =
-        serde_json::to_string(&update.new_status).map_err(|e| OperationError::Persistence {
-            message: format!("failed to serialize status: {}", e),
-        })?;
+    let new_version =
+        update
+            .expected_version
+            .checked_add(1)
+            .ok_or_else(|| OperationError::Persistence {
+                message: format!(
+                    "version overflow for operation {}: version {} cannot be incremented",
+                    update.operation_id, update.expected_version
+                ),
+            })?;
 
     // Compute timestamp fields based on new status
     let started_at = if update.new_status == OperationStatus::Executing {
@@ -142,7 +141,7 @@ pub fn update_status(tx: &Transaction, update: &StatusUpdate) -> Result<i64, Ope
                 version = ?10
              WHERE id = ?11 AND version = ?12",
             params![
-                status_json,
+                update.new_status.to_db(),
                 started_at,
                 committed_at,
                 failed_at,
@@ -170,9 +169,9 @@ pub fn update_status(tx: &Transaction, update: &StatusUpdate) -> Result<i64, Ope
                     actual_version: record.version,
                 })
             }
-            Some(_) => Err(OperationError::InvalidTransition {
+            Some(record) => Err(OperationError::InvalidTransition {
                 operation_id: update.operation_id.clone(),
-                from: OperationStatus::Prepared, // placeholder
+                from: record.status,
                 to: update.new_status,
             }),
             None => Err(OperationError::NotFound {
@@ -184,8 +183,10 @@ pub fn update_status(tx: &Transaction, update: &StatusUpdate) -> Result<i64, Ope
     }
 }
 
-/// List all non-terminal operations (for startup reconcile).
-pub fn list_non_terminal(tx: &Transaction) -> Result<Vec<OperationRecord>, OperationError> {
+/// List all reconcilable operations for startup reconcile.
+/// Returns operations in states: PREPARED, EXECUTING, SIDE_EFFECT_OBSERVED, REQUIRES_RECONCILE.
+/// Excludes truly terminal states: COMMITTED, ROLLED_BACK, FAILED.
+pub fn list_reconcilable(tx: &Transaction) -> Result<Vec<OperationRecord>, OperationError> {
     let mut stmt = tx
         .conn()
         .prepare(
@@ -194,21 +195,21 @@ pub fn list_non_terminal(tx: &Transaction) -> Result<Vec<OperationRecord>, Opera
                     external_reference, recovery_hint, prepared_at, started_at,
                     committed_at, failed_at, completed_at, last_error, version
              FROM operations
-             WHERE status NOT IN ('\"COMMITTED\"', '\"ROLLED_BACK\"', '\"REQUIRES_RECONCILE\"', '\"FAILED\"')
+             WHERE status IN ('PREPARED', 'EXECUTING', 'SIDE_EFFECT_OBSERVED', 'REQUIRES_RECONCILE')
              ORDER BY prepared_at ASC",
         )
         .map_err(|e| OperationError::Persistence {
-            message: format!("list_non_terminal prepare failed: {}", e),
+            message: format!("list_reconcilable prepare failed: {}", e),
         })?;
 
     let rows = stmt
         .query_map([], parse_operation_row)
         .map_err(|e| OperationError::Persistence {
-            message: format!("list_non_terminal query failed: {}", e),
+            message: format!("list_reconcilable query failed: {}", e),
         })?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| OperationError::Persistence {
-            message: format!("list_non_terminal collect failed: {}", e),
+            message: format!("list_reconcilable collect failed: {}", e),
         })?;
 
     Ok(rows)
@@ -216,13 +217,12 @@ pub fn list_non_terminal(tx: &Transaction) -> Result<Vec<OperationRecord>, Opera
 
 fn parse_operation_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<OperationRecord> {
     let op_type_str: String = r.get(1)?;
-    let operation_type: OperationType =
-        serde_json::from_str(&op_type_str).unwrap_or(OperationType::Other {
-            detail: op_type_str,
-        });
+    let operation_type = OperationType::from_db(&op_type_str).ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(1, "operation_type".into(), rusqlite::types::Type::Text)
+    })?;
 
     let status_str: String = r.get(2)?;
-    let status: OperationStatus = serde_json::from_str(&status_str).map_err(|_| {
+    let status = OperationStatus::from_db(&status_str).ok_or_else(|| {
         rusqlite::Error::InvalidColumnType(2, "status".into(), rusqlite::types::Type::Text)
     })?;
 
@@ -261,7 +261,7 @@ mod tests {
 
         let record = OperationRecord::prepare(
             OperationId("op-001".into()),
-            OperationType::WorktreeCreate,
+            OperationType::CreateWorktree,
             1700000000,
         );
         insert_operation(&tx, &record).unwrap();
@@ -271,7 +271,7 @@ mod tests {
             .expect("must exist");
         assert_eq!(found.id, OperationId("op-001".into()));
         assert_eq!(found.status, OperationStatus::Prepared);
-        assert_eq!(found.operation_type, OperationType::WorktreeCreate);
+        assert_eq!(found.operation_type, OperationType::CreateWorktree);
         assert_eq!(found.version, 1);
 
         tx.commit().unwrap();
@@ -295,7 +295,7 @@ mod tests {
 
         let record = OperationRecord::prepare(
             OperationId("op-002".into()),
-            OperationType::AgentSpawn,
+            OperationType::SpawnAgent,
             1700000000,
         );
         insert_operation(&tx, &record).unwrap();
@@ -333,7 +333,7 @@ mod tests {
 
         let record = OperationRecord::prepare(
             OperationId("op-003".into()),
-            OperationType::MergeExecute,
+            OperationType::CanonicalMerge,
             1700000000,
         );
         insert_operation(&tx, &record).unwrap();
@@ -358,21 +358,56 @@ mod tests {
     }
 
     #[test]
-    fn list_non_terminal_excludes_terminal() {
+    fn version_overflow_is_rejected() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
 
-        // Insert PREPARED
+        let record = OperationRecord::prepare(
+            OperationId("op-overflow".into()),
+            OperationType::CreateGitRef,
+            1700000000,
+        );
+        insert_operation(&tx, &record).unwrap();
+
+        let err = update_status(
+            &tx,
+            &StatusUpdate {
+                operation_id: OperationId("op-overflow".into()),
+                new_status: OperationStatus::Executing,
+                now: 1700000100,
+                expected_version: i64::MAX, // overflow on +1
+                last_error: None,
+                result_payload: None,
+                external_reference: None,
+                recovery_hint: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, OperationError::Persistence { ref message } if message.contains("overflow")),
+            "expected overflow error, got {:?}",
+            err
+        );
+
+        tx.rollback().unwrap();
+    }
+
+    #[test]
+    fn list_reconcilable_includes_requires_reconcile() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let tx = store.transaction().unwrap();
+
+        // PREPARED
         let r1 = OperationRecord::prepare(
             OperationId("op-a".into()),
-            OperationType::WorktreeCreate,
+            OperationType::CreateWorktree,
             100,
         );
         insert_operation(&tx, &r1).unwrap();
 
-        // Insert EXECUTING
+        // EXECUTING
         let r2 =
-            OperationRecord::prepare(OperationId("op-b".into()), OperationType::AgentSpawn, 200);
+            OperationRecord::prepare(OperationId("op-b".into()), OperationType::SpawnAgent, 200);
         insert_operation(&tx, &r2).unwrap();
         update_status(
             &tx,
@@ -389,18 +424,54 @@ mod tests {
         )
         .unwrap();
 
-        // Insert FAILED (terminal)
-        let r3 =
-            OperationRecord::prepare(OperationId("op-c".into()), OperationType::GitRefCreate, 300);
+        // REQUIRES_RECONCILE
+        let r3 = OperationRecord::prepare(
+            OperationId("op-c".into()),
+            OperationType::RemoveWorktree,
+            300,
+        );
         insert_operation(&tx, &r3).unwrap();
         update_status(
             &tx,
             &StatusUpdate {
                 operation_id: OperationId("op-c".into()),
-                new_status: OperationStatus::Failed,
+                new_status: OperationStatus::Executing,
                 now: 301,
                 expected_version: 1,
-                last_error: Some("connection refused".into()),
+                last_error: None,
+                result_payload: None,
+                external_reference: None,
+                recovery_hint: None,
+            },
+        )
+        .unwrap();
+        update_status(
+            &tx,
+            &StatusUpdate {
+                operation_id: OperationId("op-c".into()),
+                new_status: OperationStatus::RequiresReconcile,
+                now: 302,
+                expected_version: 2,
+                last_error: Some("process died mid-op".into()),
+                result_payload: None,
+                external_reference: None,
+                recovery_hint: Some("check if worktree dir exists".into()),
+            },
+        )
+        .unwrap();
+
+        // FAILED (terminal — should NOT appear)
+        let r4 =
+            OperationRecord::prepare(OperationId("op-d".into()), OperationType::CreateGitRef, 400);
+        insert_operation(&tx, &r4).unwrap();
+        update_status(
+            &tx,
+            &StatusUpdate {
+                operation_id: OperationId("op-d".into()),
+                new_status: OperationStatus::Failed,
+                now: 401,
+                expected_version: 1,
+                last_error: Some("ref exists".into()),
                 result_payload: None,
                 external_reference: None,
                 recovery_hint: None,
@@ -408,11 +479,211 @@ mod tests {
         )
         .unwrap();
 
-        let non_terminal = list_non_terminal(&tx).unwrap();
-        assert_eq!(non_terminal.len(), 2);
-        assert_eq!(non_terminal[0].id, OperationId("op-a".into()));
-        assert_eq!(non_terminal[1].id, OperationId("op-b".into()));
+        let reconcilable = list_reconcilable(&tx).unwrap();
+        assert_eq!(
+            reconcilable.len(),
+            3,
+            "must include PREPARED, EXECUTING, and REQUIRES_RECONCILE"
+        );
+        assert_eq!(reconcilable[0].id, OperationId("op-a".into()));
+        assert_eq!(reconcilable[1].id, OperationId("op-b".into()));
+        assert_eq!(reconcilable[2].id, OperationId("op-c".into()));
+        assert_eq!(reconcilable[2].status, OperationStatus::RequiresReconcile);
+        assert_eq!(
+            reconcilable[2].recovery_hint.as_deref(),
+            Some("check if worktree dir exists")
+        );
 
         tx.commit().unwrap();
+    }
+
+    #[test]
+    fn canonical_status_stored_unquoted() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let tx = store.transaction().unwrap();
+
+        let record = OperationRecord::prepare(
+            OperationId("op-canonical".into()),
+            OperationType::CreateWorktree,
+            1700000000,
+        );
+        insert_operation(&tx, &record).unwrap();
+
+        let raw_status: String = tx
+            .conn()
+            .query_row(
+                "SELECT status FROM operations WHERE id = ?1",
+                params!["op-canonical"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            raw_status, "PREPARED",
+            "status must be unquoted canonical TEXT"
+        );
+
+        let raw_type: String = tx
+            .conn()
+            .query_row(
+                "SELECT operation_type FROM operations WHERE id = ?1",
+                params!["op-canonical"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            raw_type, "CREATE_WORKTREE",
+            "operation_type must be unquoted canonical TEXT"
+        );
+
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn prepared_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("op_restart.db");
+
+        // Session 1: create PREPARED operation
+        {
+            let mut store = SqliteStore::open(&db_path).unwrap();
+            let tx = store.transaction().unwrap();
+            let record = OperationRecord::prepare(
+                OperationId("op-persist".into()),
+                OperationType::CreateWorktree,
+                1700000000,
+            );
+            insert_operation(&tx, &record).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Session 2: reopen and verify
+        {
+            let mut store = SqliteStore::open(&db_path).unwrap();
+            let tx = store.transaction().unwrap();
+
+            let found = find_by_id(&tx, &OperationId("op-persist".into()))
+                .unwrap()
+                .expect("PREPARED operation must survive restart");
+            assert_eq!(found.status, OperationStatus::Prepared);
+            assert_eq!(found.operation_type, OperationType::CreateWorktree);
+
+            let reconcilable = list_reconcilable(&tx).unwrap();
+            assert_eq!(reconcilable.len(), 1);
+            assert_eq!(reconcilable[0].id, OperationId("op-persist".into()));
+
+            tx.rollback().unwrap();
+        }
+    }
+
+    #[test]
+    fn requires_reconcile_survives_restart_with_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("op_reconcile_restart.db");
+
+        // Session 1: create operation that ends up REQUIRES_RECONCILE
+        {
+            let mut store = SqliteStore::open(&db_path).unwrap();
+            let tx = store.transaction().unwrap();
+            let record = OperationRecord::prepare(
+                OperationId("op-recon".into()),
+                OperationType::RemoveWorktree,
+                100,
+            );
+            insert_operation(&tx, &record).unwrap();
+            update_status(
+                &tx,
+                &StatusUpdate {
+                    operation_id: OperationId("op-recon".into()),
+                    new_status: OperationStatus::Executing,
+                    now: 200,
+                    expected_version: 1,
+                    last_error: None,
+                    result_payload: None,
+                    external_reference: None,
+                    recovery_hint: None,
+                },
+            )
+            .unwrap();
+            update_status(
+                &tx,
+                &StatusUpdate {
+                    operation_id: OperationId("op-recon".into()),
+                    new_status: OperationStatus::RequiresReconcile,
+                    now: 300,
+                    expected_version: 2,
+                    last_error: Some("process killed".into()),
+                    result_payload: None,
+                    external_reference: None,
+                    recovery_hint: Some("verify worktree cleanup".into()),
+                },
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Session 2: reopen, verify, and resolve
+        {
+            let mut store = SqliteStore::open(&db_path).unwrap();
+            let tx = store.transaction().unwrap();
+
+            let reconcilable = list_reconcilable(&tx).unwrap();
+            assert_eq!(reconcilable.len(), 1);
+            assert_eq!(reconcilable[0].id, OperationId("op-recon".into()));
+            assert_eq!(reconcilable[0].status, OperationStatus::RequiresReconcile);
+            assert_eq!(
+                reconcilable[0].recovery_hint.as_deref(),
+                Some("verify worktree cleanup")
+            );
+            assert_eq!(
+                reconcilable[0].last_error.as_deref(),
+                Some("process killed")
+            );
+
+            // Resolve: evidence confirms side effect was observed
+            let v4 = update_status(
+                &tx,
+                &StatusUpdate {
+                    operation_id: OperationId("op-recon".into()),
+                    new_status: OperationStatus::SideEffectObserved,
+                    now: 400,
+                    expected_version: 3,
+                    last_error: None,
+                    result_payload: Some("{\"cleaned\":true}".into()),
+                    external_reference: None,
+                    recovery_hint: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(v4, 4);
+
+            // Commit the resolved operation
+            let v5 = update_status(
+                &tx,
+                &StatusUpdate {
+                    operation_id: OperationId("op-recon".into()),
+                    new_status: OperationStatus::Committed,
+                    now: 500,
+                    expected_version: 4,
+                    last_error: None,
+                    result_payload: None,
+                    external_reference: None,
+                    recovery_hint: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(v5, 5);
+
+            let final_record = find_by_id(&tx, &OperationId("op-recon".into()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(final_record.status, OperationStatus::Committed);
+            assert!(final_record.status.is_terminal());
+
+            // No longer reconcilable
+            let reconcilable_after = list_reconcilable(&tx).unwrap();
+            assert!(reconcilable_after.is_empty());
+
+            tx.commit().unwrap();
+        }
     }
 }

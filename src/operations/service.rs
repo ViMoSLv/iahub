@@ -157,6 +157,29 @@ impl OperationService {
         )
     }
 
+    /// Resolve a REQUIRES_RECONCILE operation based on observed evidence.
+    /// Transitions to SIDE_EFFECT_OBSERVED when evidence confirms the effect occurred.
+    pub fn resolve_with_evidence(
+        tx: &Transaction,
+        operation_id: &OperationId,
+        now: i64,
+        expected_version: i64,
+        result_payload: Option<&str>,
+        external_reference: Option<&str>,
+    ) -> Result<i64, OperationError> {
+        Self::transition(
+            tx,
+            operation_id,
+            OperationStatus::SideEffectObserved,
+            now,
+            expected_version,
+            None,
+            result_payload,
+            external_reference,
+            None,
+        )
+    }
+
     /// Get an operation by ID.
     pub fn get_by_id(
         tx: &Transaction,
@@ -165,9 +188,10 @@ impl OperationService {
         repository::find_by_id(tx, operation_id)
     }
 
-    /// List all non-terminal operations for startup reconcile.
-    pub fn list_non_terminal(tx: &Transaction) -> Result<Vec<OperationRecord>, OperationError> {
-        repository::list_non_terminal(tx)
+    /// List all reconcilable operations for startup reconcile.
+    /// Returns operations in: PREPARED, EXECUTING, SIDE_EFFECT_OBSERVED, REQUIRES_RECONCILE.
+    pub fn list_reconcilable(tx: &Transaction) -> Result<Vec<OperationRecord>, OperationError> {
+        repository::list_reconcilable(tx)
     }
 
     /// Internal: validate transition and update status atomically.
@@ -235,11 +259,10 @@ mod tests {
         let record = OperationService::prepare(
             &tx,
             OperationId("op-prep".into()),
-            OperationType::WorktreeCreate,
+            OperationType::CreateWorktree,
             1700000000,
         )
         .unwrap();
-
         assert_eq!(record.status, OperationStatus::Prepared);
         assert_eq!(record.version, 1);
 
@@ -256,12 +279,11 @@ mod tests {
     fn valid_full_lifecycle() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
-
         let op_id = OperationId("op-lifecycle".into());
 
         // PREPARED
         let record =
-            OperationService::prepare(&tx, op_id.clone(), OperationType::AgentSpawn, 100).unwrap();
+            OperationService::prepare(&tx, op_id.clone(), OperationType::SpawnAgent, 100).unwrap();
         assert_eq!(record.version, 1);
 
         // EXECUTING
@@ -297,9 +319,9 @@ mod tests {
     fn invalid_transition_is_rejected() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
-
         let op_id = OperationId("op-invalid".into());
-        OperationService::prepare(&tx, op_id.clone(), OperationType::MergeExecute, 100).unwrap();
+
+        OperationService::prepare(&tx, op_id.clone(), OperationType::CanonicalMerge, 100).unwrap();
 
         // PREPARED → COMMITTED is invalid (must go through EXECUTING → SIDE_EFFECT_OBSERVED)
         let err = OperationService::commit(&tx, &op_id, 200, 1, None).unwrap_err();
@@ -312,9 +334,9 @@ mod tests {
     fn failed_operation_records_error() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
-
         let op_id = OperationId("op-fail".into());
-        OperationService::prepare(&tx, op_id.clone(), OperationType::GitRefCreate, 100).unwrap();
+
+        OperationService::prepare(&tx, op_id.clone(), OperationType::CreateGitRef, 100).unwrap();
 
         let v2 =
             OperationService::mark_failed(&tx, &op_id, 200, 1, Some("ref already exists")).unwrap();
@@ -332,9 +354,9 @@ mod tests {
     fn requires_reconcile_survives_with_hint() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
-
         let op_id = OperationId("op-reconcile".into());
-        OperationService::prepare(&tx, op_id.clone(), OperationType::WorktreeRemove, 100).unwrap();
+
+        OperationService::prepare(&tx, op_id.clone(), OperationType::RemoveWorktree, 100).unwrap();
         OperationService::begin_execution(&tx, &op_id, 200, 1).unwrap();
 
         let v3 = OperationService::mark_requires_reconcile(
@@ -354,56 +376,124 @@ mod tests {
             record.recovery_hint.as_deref(),
             Some("check if worktree dir still exists on disk")
         );
-        assert!(record.status.is_terminal());
+        assert!(
+            !record.status.is_terminal(),
+            "REQUIRES_RECONCILE must not be terminal"
+        );
 
         tx.commit().unwrap();
     }
 
     #[test]
-    fn list_non_terminal_for_startup_reconcile() {
+    fn reconcile_resolution_via_evidence() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let tx = store.transaction().unwrap();
+        let op_id = OperationId("op-resolve".into());
+
+        OperationService::prepare(&tx, op_id.clone(), OperationType::CreateWorktree, 100).unwrap();
+        OperationService::begin_execution(&tx, &op_id, 200, 1).unwrap();
+        OperationService::mark_requires_reconcile(
+            &tx,
+            &op_id,
+            300,
+            2,
+            Some("verify worktree exists"),
+            Some("timeout"),
+        )
+        .unwrap();
+
+        // Resolve: evidence confirms side effect was observed
+        let v4 = OperationService::resolve_with_evidence(
+            &tx,
+            &op_id,
+            400,
+            3,
+            Some("{\"worktree\":\"/tmp/wt-1\"}"),
+            Some("dir-confirmed"),
+        )
+        .unwrap();
+        assert_eq!(v4, 4);
+
+        let resolved = OperationService::get_by_id(&tx, &op_id).unwrap().unwrap();
+        assert_eq!(resolved.status, OperationStatus::SideEffectObserved);
+
+        // Now commit
+        let v5 = OperationService::commit(&tx, &op_id, 500, 4, None).unwrap();
+        assert_eq!(v5, 5);
+
+        let final_record = OperationService::get_by_id(&tx, &op_id).unwrap().unwrap();
+        assert_eq!(final_record.status, OperationStatus::Committed);
+        assert!(final_record.status.is_terminal());
+
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn list_reconcilable_for_startup_reconcile() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
 
-        // PREPARED (non-terminal)
+        // PREPARED (reconcilable)
         OperationService::prepare(
             &tx,
             OperationId("op-nt-1".into()),
-            OperationType::LeaseAcquire,
+            OperationType::CreateCandidateCommit,
             100,
         )
         .unwrap();
 
-        // EXECUTING (non-terminal)
+        // EXECUTING (reconcilable)
         OperationService::prepare(
             &tx,
             OperationId("op-nt-2".into()),
-            OperationType::ArtifactStore,
+            OperationType::TerminateAgent,
             200,
         )
         .unwrap();
         OperationService::begin_execution(&tx, &OperationId("op-nt-2".into()), 201, 1).unwrap();
 
+        // REQUIRES_RECONCILE (reconcilable)
+        OperationService::prepare(
+            &tx,
+            OperationId("op-nt-3".into()),
+            OperationType::MergeSimulation,
+            300,
+        )
+        .unwrap();
+        OperationService::begin_execution(&tx, &OperationId("op-nt-3".into()), 301, 1).unwrap();
+        OperationService::mark_requires_reconcile(
+            &tx,
+            &OperationId("op-nt-3".into()),
+            302,
+            2,
+            Some("check merge result"),
+            None,
+        )
+        .unwrap();
+
         // FAILED (terminal — should NOT appear)
         OperationService::prepare(
             &tx,
             OperationId("op-term".into()),
-            OperationType::NotificationSend,
-            300,
+            OperationType::CreateGitRef,
+            400,
         )
         .unwrap();
         OperationService::mark_failed(
             &tx,
             &OperationId("op-term".into()),
-            301,
+            401,
             1,
             Some("smtp error"),
         )
         .unwrap();
 
-        let non_terminal = OperationService::list_non_terminal(&tx).unwrap();
-        assert_eq!(non_terminal.len(), 2);
-        assert_eq!(non_terminal[0].id, OperationId("op-nt-1".into()));
-        assert_eq!(non_terminal[1].id, OperationId("op-nt-2".into()));
+        let reconcilable = OperationService::list_reconcilable(&tx).unwrap();
+        assert_eq!(reconcilable.len(), 3);
+        assert_eq!(reconcilable[0].id, OperationId("op-nt-1".into()));
+        assert_eq!(reconcilable[1].id, OperationId("op-nt-2".into()));
+        assert_eq!(reconcilable[2].id, OperationId("op-nt-3".into()));
+        assert_eq!(reconcilable[2].status, OperationStatus::RequiresReconcile);
 
         tx.commit().unwrap();
     }
@@ -412,5 +502,108 @@ mod tests {
     fn unknown_status_fails_closed() {
         let result: Result<OperationStatus, _> = serde_json::from_str("\"UNKNOWN_STATE\"");
         assert!(result.is_err(), "unknown operation status must fail closed");
+    }
+
+    #[test]
+    fn prepared_survives_restart_file_backed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("op_service_restart.db");
+
+        // Session 1
+        {
+            let mut store = SqliteStore::open(&db_path).unwrap();
+            let tx = store.transaction().unwrap();
+            OperationService::prepare(
+                &tx,
+                OperationId("op-persist".into()),
+                OperationType::CreateWorktree,
+                1700000000,
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Session 2
+        {
+            let mut store = SqliteStore::open(&db_path).unwrap();
+            let tx = store.transaction().unwrap();
+
+            let found = OperationService::get_by_id(&tx, &OperationId("op-persist".into()))
+                .unwrap()
+                .expect("PREPARED must survive restart");
+            assert_eq!(found.status, OperationStatus::Prepared);
+
+            let reconcilable = OperationService::list_reconcilable(&tx).unwrap();
+            assert_eq!(reconcilable.len(), 1);
+
+            tx.rollback().unwrap();
+        }
+    }
+
+    #[test]
+    fn requires_reconcile_survives_restart_and_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("op_recon_resolve.db");
+
+        // Session 1: create and move to REQUIRES_RECONCILE
+        {
+            let mut store = SqliteStore::open(&db_path).unwrap();
+            let tx = store.transaction().unwrap();
+            let op_id = OperationId("op-recon-r".into());
+            OperationService::prepare(&tx, op_id.clone(), OperationType::RemoveWorktree, 100)
+                .unwrap();
+            OperationService::begin_execution(&tx, &op_id, 200, 1).unwrap();
+            OperationService::mark_requires_reconcile(
+                &tx,
+                &op_id,
+                300,
+                2,
+                Some("verify cleanup"),
+                Some("killed"),
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Session 2: reopen, verify, resolve
+        {
+            let mut store = SqliteStore::open(&db_path).unwrap();
+            let tx = store.transaction().unwrap();
+
+            let reconcilable = OperationService::list_reconcilable(&tx).unwrap();
+            assert_eq!(reconcilable.len(), 1);
+            assert_eq!(reconcilable[0].status, OperationStatus::RequiresReconcile);
+            assert_eq!(
+                reconcilable[0].recovery_hint.as_deref(),
+                Some("verify cleanup")
+            );
+
+            // Resolve with evidence
+            let v4 = OperationService::resolve_with_evidence(
+                &tx,
+                &reconcilable[0].id,
+                400,
+                3,
+                Some("{\"cleaned\":true}"),
+                None,
+            )
+            .unwrap();
+            assert_eq!(v4, 4);
+
+            // Commit
+            let v5 = OperationService::commit(&tx, &reconcilable[0].id, 500, 4, None).unwrap();
+            assert_eq!(v5, 5);
+
+            let final_record = OperationService::get_by_id(&tx, &reconcilable[0].id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(final_record.status, OperationStatus::Committed);
+            assert!(final_record.status.is_terminal());
+
+            // No longer reconcilable
+            assert!(OperationService::list_reconcilable(&tx).unwrap().is_empty());
+
+            tx.commit().unwrap();
+        }
     }
 }

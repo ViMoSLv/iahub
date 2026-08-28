@@ -22,7 +22,7 @@
 | INV-001 | Agents are disposable; no orchestration state depends on agent liveness. | `test_inv_001_agents_disposable` | PLANNED |
 | INV-002 | No two active Attempts share the same workspace path. | `test_inv_002_no_shared_workspace` | PLANNED |
 | INV-003 | Agent-to-agent communication occurs only through durable state, never direct chat. | `test_inv_003_state_not_conversation` | PLANNED |
-| INV-004 | Every external side effect has a corresponding operations journal entry before execution. | `test_inv_004_journal_before_side_effect` | PLANNED |
+| INV-004 | Every external side effect has a corresponding operations journal entry before execution. | `operations::service::tests::prepare_persists_before_execution` | PARTIAL |
 | INV-005 | Reported agent outcome is never trusted without independent observational verification. | `domain::delegation::tests::worker_report_is_separate_from_verification` | ENFORCED |
 | INV-006 | The agent that produced a candidate cannot be the reviewer of that same candidate. | `test_inv_006_no_self_review` | PLANNED |
 | INV-007 | When state cannot be determined, it remains UNKNOWN rather than defaulting to success or failure. | `domain::delegation::tests::unknown_verification_outcome_fails_deserialization` | ENFORCED |
@@ -52,7 +52,7 @@
 |----|-----------|---------------|----------|
 | INV-017 | Closing the UI does not terminate active sessions or lose orchestration state. | `test_inv_017_ui_disposable` | PLANNED |
 | INV-018 | No critical mutable orchestration state exists solely in process memory. | `persistence::database::tests::file_backed_store_survives_restart` | ENFORCED |
-| INV-019 | Every external side effect produces a durable journal entry recoverable after crash. | `test_inv_019_journal_all_side_effects` | PLANNED |
+| INV-019 | Every external side effect produces a durable journal entry recoverable after crash. | `operations::service::tests::requires_reconcile_survives_restart_and_resolves` | PARTIAL |
 | INV-020 | Every failure carries a classified failure_reason; bare FAILED without classification is rejected. | `test_inv_020_classify_failures` | PARTIAL |
 
 ## Command Model and Concurrency Invariants (21–25)
