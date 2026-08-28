@@ -92,6 +92,37 @@ impl fmt::Display for CommandError {
     }
 }
 
+impl CommandError {
+    /// Returns a stable, machine-readable error code for this error variant.
+    ///
+    /// These codes are part of the public API contract and must not change
+    /// across versions. They are consumed by CLI, MCP adapters, and future
+    /// HTTP/REST boundaries for programmatic error handling.
+    ///
+    /// | Code                          | Variant                  |
+    /// |-------------------------------|--------------------------|
+    /// | `COMMAND_ID_PAYLOAD_MISMATCH` | DuplicateCommandMismatch |
+    /// | `STATE_CONFLICT`              | StateConflict            |
+    /// | `NOT_FOUND`                   | NotFound                 |
+    /// | `INVALID_COMMAND`             | InvalidCommand           |
+    /// | `INVALID_TRANSITION`          | InvalidTransition        |
+    /// | `PRECONDITION_FAILED`         | PreconditionFailed       |
+    /// | `STALE_AUTHORITY`             | StaleAuthority           |
+    /// | `PERSISTENCE_ERROR`           | Persistence              |
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::DuplicateCommandMismatch { .. } => "COMMAND_ID_PAYLOAD_MISMATCH",
+            Self::StateConflict { .. } => "STATE_CONFLICT",
+            Self::NotFound { .. } => "NOT_FOUND",
+            Self::InvalidCommand { .. } => "INVALID_COMMAND",
+            Self::InvalidTransition { .. } => "INVALID_TRANSITION",
+            Self::PreconditionFailed { .. } => "PRECONDITION_FAILED",
+            Self::StaleAuthority { .. } => "STALE_AUTHORITY",
+            Self::Persistence(_) => "PERSISTENCE_ERROR",
+        }
+    }
+}
+
 impl std::error::Error for CommandError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -126,6 +157,59 @@ impl From<PersistenceError> for CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_codes_are_stable_and_exhaustive() {
+        // Every variant must have a non-empty, uppercase-with-underscores code.
+        // This test ensures no new variant is added without a corresponding code.
+        let errors: Vec<CommandError> = vec![
+            CommandError::DuplicateCommandMismatch {
+                command_id: CommandId::from("c"),
+            },
+            CommandError::StateConflict {
+                entity: "E",
+                id: "i".into(),
+                expected_version: EntityVersion(1),
+            },
+            CommandError::NotFound {
+                entity: "E",
+                id: "i".into(),
+            },
+            CommandError::InvalidCommand { detail: "d".into() },
+            CommandError::InvalidTransition {
+                detail: "E: A -> B".into(),
+            },
+            CommandError::PreconditionFailed { detail: "d".into() },
+            CommandError::StaleAuthority {
+                resource_type: "task".to_string(),
+                resource_id: "t1".into(),
+                presented_token: crate::domain::FencingToken(1),
+                current_token: crate::domain::FencingToken(2),
+                reason: crate::authority::model::StaleReason::LeaseExpired,
+            },
+            CommandError::Persistence(PersistenceError::Busy { detail: "d".into() }),
+        ];
+
+        for err in &errors {
+            let code = err.code();
+            assert!(!code.is_empty(), "code must not be empty for {:?}", err);
+            assert!(
+                code.chars().all(|c| c.is_ascii_uppercase() || c == '_'),
+                "code '{}' must be UPPER_SNAKE_CASE",
+                code
+            );
+        }
+
+        // Verify specific codes match the documented contract
+        assert_eq!(errors[0].code(), "COMMAND_ID_PAYLOAD_MISMATCH");
+        assert_eq!(errors[1].code(), "STATE_CONFLICT");
+        assert_eq!(errors[2].code(), "NOT_FOUND");
+        assert_eq!(errors[3].code(), "INVALID_COMMAND");
+        assert_eq!(errors[4].code(), "INVALID_TRANSITION");
+        assert_eq!(errors[5].code(), "PRECONDITION_FAILED");
+        assert_eq!(errors[6].code(), "STALE_AUTHORITY");
+        assert_eq!(errors[7].code(), "PERSISTENCE_ERROR");
+    }
 
     #[test]
     fn duplicate_mismatch_display() {
