@@ -15,7 +15,7 @@ pub struct Invariant {
     pub test_fn: &'static str,
 }
 
-/// All 36 invariants required by Appendix Q before MB-BOOTSTRAP-001.
+/// All 41 invariants: original 36 from Appendix Q plus 5 from ADR-0011 (Delegation Model).
 pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-001",
@@ -197,6 +197,31 @@ pub const INVARIANTS: &[Invariant] = &[
         statement: "Policy snapshot for a Run is immutable once RUNNING begins; changes require explicit migration event.",
         test_fn: "test_inv_036_policy_snapshot_immutability",
     },
+    Invariant {
+        id: "INV-037",
+        statement: "Prompts are compiled artifacts, not coordination state. Task semantics live in structured entities; prompts are regenerable communication artifacts.",
+        test_fn: "test_inv_037_prompts_are_artifacts",
+    },
+    Invariant {
+        id: "INV-038",
+        statement: "Every delegation must reference a versioned context snapshot capturing project, architecture, invariant, and ADR revisions at creation time.",
+        test_fn: "test_inv_038_delegation_requires_context_snapshot",
+    },
+    Invariant {
+        id: "INV-039",
+        statement: "Agent selection is capability-based, not hardcoded to a specific model name or provider.",
+        test_fn: "test_inv_039_capability_based_selection",
+    },
+    Invariant {
+        id: "INV-040",
+        statement: "Workers encountering an architectural decision outside their authority scope must stop and escalate to the Orchestrator.",
+        test_fn: "test_inv_040_out_of_authority_must_stop",
+    },
+    Invariant {
+        id: "INV-041",
+        statement: "Only verified evidence from independent verification may transition critical work into a certified DONE state.",
+        test_fn: "test_inv_041_verified_evidence_for_done",
+    },
 ];
 
 /// Returns the invariant with the given ID, if it exists.
@@ -214,11 +239,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invariant_count_is_exactly_36() {
+    fn invariant_count_is_exactly_41() {
         assert_eq!(
             INVARIANTS.len(),
-            36,
-            "Appendix Q requires exactly 36 invariants (INV-001 through INV-036)"
+            41,
+            "36 original invariants (Appendix Q) + 5 delegation invariants (ADR-0011) = 41 total"
         );
     }
 
@@ -267,15 +292,16 @@ mod tests {
     #[test]
     fn find_invariant_returns_none_for_invalid_id() {
         assert!(find_invariant("INV-000").is_none());
-        assert!(find_invariant("INV-037").is_none());
+        assert!(find_invariant("INV-042").is_none());
         assert!(find_invariant("").is_none());
     }
 
     #[test]
-    fn all_invariant_ids_returns_36_entries() {
+    fn all_invariant_ids_returns_41_entries() {
         let ids = all_invariant_ids();
-        assert_eq!(ids.len(), 36);
+        assert_eq!(ids.len(), 41);
         assert_eq!(ids[0], "INV-001");
         assert_eq!(ids[35], "INV-036");
+        assert_eq!(ids[40], "INV-041");
     }
 }

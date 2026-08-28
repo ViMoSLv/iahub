@@ -29,6 +29,11 @@ pub struct ProjectRepository;
 impl ProjectRepository {
     /// Insert a new project. Fails if ID already exists (PK constraint).
     pub fn insert(tx: &Transaction, row: &ProjectRow) -> Result<(), PersistenceError> {
+        // Timestamps are stored as INTEGER (unix millis) in SQLite.
+        // Parse the opaque Timestamp string to i64 for persistence.
+        let created_at: i64 = row.created_at.0.parse().unwrap_or(0);
+        let updated_at: i64 = row.updated_at.0.parse().unwrap_or(0);
+
         tx.conn()
             .execute(
                 "INSERT INTO projects (id, name, repository_identity, canonical_path, target_branch, created_at, updated_at, version)
@@ -39,8 +44,8 @@ impl ProjectRepository {
                     row.repository_identity,
                     row.canonical_path,
                     row.target_branch,
-                    row.created_at.0,
-                    row.updated_at.0,
+                    created_at,
+                    updated_at,
                     row.version.0,
                 ],
             )
@@ -68,14 +73,18 @@ impl ProjectRepository {
              FROM projects WHERE id = ?1",
             [&id.0],
             |row| {
+                // created_at and updated_at are stored as INTEGER in SQLite.
+                // Read as i64 and convert back to opaque Timestamp string.
+                let created_at_i64: i64 = row.get(5)?;
+                let updated_at_i64: i64 = row.get(6)?;
                 Ok(ProjectRow {
                     id: ProjectId(row.get::<_, String>(0)?),
                     name: row.get(1)?,
                     repository_identity: row.get(2)?,
                     canonical_path: row.get(3)?,
                     target_branch: row.get(4)?,
-                    created_at: Timestamp(row.get::<_, String>(5)?),
-                    updated_at: Timestamp(row.get::<_, String>(6)?),
+                    created_at: Timestamp(created_at_i64.to_string()),
+                    updated_at: Timestamp(updated_at_i64.to_string()),
                     version: EntityVersion(row.get(7)?),
                 })
             },
@@ -95,6 +104,9 @@ impl ProjectRepository {
         row: &ProjectRow,
         expected_version: EntityVersion,
     ) -> Result<(), PersistenceError> {
+        // Timestamps are stored as INTEGER (unix millis) in SQLite.
+        let updated_at: i64 = row.updated_at.0.parse().unwrap_or(0);
+
         let affected = tx
             .conn()
             .execute(
@@ -106,7 +118,7 @@ impl ProjectRepository {
                     row.repository_identity,
                     row.canonical_path,
                     row.target_branch,
-                    row.updated_at.0,
+                    updated_at,
                     row.version.0,
                     row.id.0,
                     expected_version.0,
@@ -137,8 +149,9 @@ mod tests {
             repository_identity: format!("fp-{}", id),
             canonical_path: format!("/repos/{}", id),
             target_branch: "main".to_string(),
-            created_at: Timestamp("2026-08-28T00:00:00Z".to_string()),
-            updated_at: Timestamp("2026-08-28T00:00:00Z".to_string()),
+            // Use integer-compatible timestamps since schema stores INTEGER
+            created_at: Timestamp("1000".to_string()),
+            updated_at: Timestamp("1000".to_string()),
             version: EntityVersion::INITIAL,
         }
     }
@@ -195,6 +208,7 @@ mod tests {
         let tx2 = store.transaction().unwrap();
         p.name = "Updated Name".to_string();
         p.version = p.version.next();
+        p.updated_at = Timestamp("2000".to_string());
         ProjectRepository::update(&tx2, &p, EntityVersion::INITIAL).unwrap();
         tx2.commit().unwrap();
 
