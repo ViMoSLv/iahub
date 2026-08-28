@@ -80,7 +80,11 @@ impl<'a> CommandEngine<'a> {
                 None
             };
 
-        let payload_hash = canonical_payload_hash(&envelope.payload);
+        let payload_hash = canonical_payload_hash(&envelope.payload).map_err(|e| {
+            CommandError::InvalidCommand {
+                detail: format!("failed to hash command payload: {}", e),
+            }
+        })?;
 
         let tx = self.store.transaction()?;
 

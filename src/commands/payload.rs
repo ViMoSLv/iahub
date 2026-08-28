@@ -7,19 +7,43 @@
 //!
 //! We use serde_json with sorted keys to ensure field ordering does not
 //! affect the hash. The payload is hashed as canonical JSON bytes.
+//! Serialization failures return a typed error instead of panicking.
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+/// Errors that can occur during canonical payload hashing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PayloadHashError {
+    /// Serialization of the payload failed. This should never happen for
+    /// well-formed domain types, but we fail closed rather than panicking.
+    SerializationFailed { detail: String },
+}
+
+impl std::fmt::Display for PayloadHashError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SerializationFailed { detail } => {
+                write!(f, "payload serialization failed: {}", detail)
+            }
+        }
+    }
+}
+
+impl std::error::Error for PayloadHashError {}
+
 /// Compute a deterministic SHA-256 hex digest of a serializable payload.
 ///
 /// Uses `serde_json` with sorted keys to guarantee canonical representation.
-/// Panics only if serialization fails (should never happen for valid domain types).
-pub fn canonical_payload_hash<T: Serialize>(payload: &T) -> String {
-    let canonical = serde_json::to_vec(payload).expect("command payload must serialize");
+/// Returns an error if serialization fails instead of panicking.
+pub fn canonical_payload_hash<T: Serialize>(payload: &T) -> Result<String, PayloadHashError> {
+    let canonical =
+        serde_json::to_vec(payload).map_err(|e| PayloadHashError::SerializationFailed {
+            detail: e.to_string(),
+        })?;
     let mut hasher = Sha256::new();
     hasher.update(&canonical);
-    hex_encode(&hasher.finalize())
+    Ok(hex_encode(&hasher.finalize()))
 }
 
 /// Encode bytes as lowercase hex string without pulling in the `hex` crate.
@@ -35,6 +59,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use serde::Serialize;
+    use std::collections::BTreeMap;
 
     #[derive(Serialize)]
     struct SamplePayload {
@@ -52,7 +77,10 @@ mod tests {
             name: "test".to_string(),
             value: 42,
         };
-        assert_eq!(canonical_payload_hash(&a), canonical_payload_hash(&b));
+        assert_eq!(
+            canonical_payload_hash(&a).unwrap(),
+            canonical_payload_hash(&b).unwrap()
+        );
     }
 
     #[test]
@@ -65,7 +93,10 @@ mod tests {
             name: "test".to_string(),
             value: 43,
         };
-        assert_ne!(canonical_payload_hash(&a), canonical_payload_hash(&b));
+        assert_ne!(
+            canonical_payload_hash(&a).unwrap(),
+            canonical_payload_hash(&b).unwrap()
+        );
     }
 
     #[test]
@@ -74,7 +105,7 @@ mod tests {
             name: "x".to_string(),
             value: 0,
         };
-        let h = canonical_payload_hash(&p);
+        let h = canonical_payload_hash(&p).unwrap();
         assert_eq!(h.len(), 64, "SHA-256 hex digest must be 64 chars");
         assert!(h
             .chars()
@@ -87,10 +118,65 @@ mod tests {
             name: "stable".to_string(),
             value: 99,
         };
-        let h1 = canonical_payload_hash(&p);
-        let h2 = canonical_payload_hash(&p);
-        let h3 = canonical_payload_hash(&p);
+        let h1 = canonical_payload_hash(&p).unwrap();
+        let h2 = canonical_payload_hash(&p).unwrap();
+        let h3 = canonical_payload_hash(&p).unwrap();
         assert_eq!(h1, h2);
         assert_eq!(h2, h3);
+    }
+
+    /// Proves that BTreeMap key ordering does not affect the hash.
+    /// Two maps with identical entries inserted in different orders
+    /// must produce the same canonical hash because serde_json serializes
+    /// BTreeMap keys in sorted order.
+    #[test]
+    fn map_key_order_does_not_affect_hash() {
+        let mut map_a = BTreeMap::new();
+        map_a.insert("zebra".to_string(), 1);
+        map_a.insert("alpha".to_string(), 2);
+        map_a.insert("middle".to_string(), 3);
+
+        let mut map_b = BTreeMap::new();
+        map_b.insert("middle".to_string(), 3);
+        map_b.insert("zebra".to_string(), 1);
+        map_b.insert("alpha".to_string(), 2);
+
+        assert_eq!(
+            canonical_payload_hash(&map_a).unwrap(),
+            canonical_payload_hash(&map_b).unwrap(),
+            "semantically identical maps must produce the same hash regardless of insertion order"
+        );
+    }
+
+    /// Nested structures with maps also produce stable hashes.
+    #[test]
+    fn nested_map_order_does_not_affect_hash() {
+        #[derive(Serialize)]
+        struct Nested {
+            label: String,
+            data: BTreeMap<String, i64>,
+        }
+
+        let mut data_a = BTreeMap::new();
+        data_a.insert("z".to_string(), 1);
+        data_a.insert("a".to_string(), 2);
+
+        let mut data_b = BTreeMap::new();
+        data_b.insert("a".to_string(), 2);
+        data_b.insert("z".to_string(), 1);
+
+        let a = Nested {
+            label: "test".into(),
+            data: data_a,
+        };
+        let b = Nested {
+            label: "test".into(),
+            data: data_b,
+        };
+
+        assert_eq!(
+            canonical_payload_hash(&a).unwrap(),
+            canonical_payload_hash(&b).unwrap()
+        );
     }
 }
