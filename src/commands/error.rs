@@ -29,10 +29,11 @@ pub enum CommandError {
     PreconditionFailed { detail: String },
     /// Stale fencing token: authority has been superseded by a newer lease.
     StaleAuthority {
-        resource_type: &'static str,
+        resource_type: String,
         resource_id: String,
         presented_token: crate::domain::FencingToken,
         current_token: crate::domain::FencingToken,
+        reason: crate::authority::model::StaleReason,
     },
     /// Persistence layer error translated to command context.
     Persistence(PersistenceError),
@@ -76,11 +77,12 @@ impl fmt::Display for CommandError {
                 resource_id,
                 presented_token,
                 current_token,
+                reason,
             } => {
                 write!(
                     f,
-                    "stale authority on {} {}: presented fencing token {} but current is {}",
-                    resource_type, resource_id, presented_token.0, current_token.0
+                    "stale authority on {} {}: presented fencing token {} but current is {} ({})",
+                    resource_type, resource_id, presented_token.0, current_token.0, reason
                 )
             }
             Self::Persistence(e) => {

@@ -20,6 +20,7 @@ pub mod error;
 pub mod handlers;
 pub mod idempotency;
 pub mod payload;
+pub mod policy;
 pub mod store;
 pub mod types;
 

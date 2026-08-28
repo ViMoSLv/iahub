@@ -8,12 +8,14 @@
 
 use serde::Serialize;
 
+use crate::authority::LeaseService;
 use crate::domain::Timestamp;
 use crate::persistence::SqliteStore;
 
 use super::error::CommandError;
 use super::idempotency::{self, IdempotencyCheck};
 use super::payload::canonical_payload_hash;
+use super::policy::AuthorityRequirement;
 use super::store;
 use super::types::{CommandEnvelope, CommandResult, CommandStatus};
 
@@ -29,22 +31,27 @@ impl<'a> CommandEngine<'a> {
         Self { store }
     }
 
-    /// Execute a command with full idempotency and atomic persistence.
+    /// Execute a command with full idempotency, authority validation, and atomic persistence.
     ///
     /// Flow:
-    /// 1. Compute canonical payload hash
-    /// 2. Begin transaction
-    /// 3. Idempotency check (replay if already completed)
-    /// 4. Insert command record (RECEIVED)
-    /// 5. Execute handler within the same transaction
-    /// 6. Mark command SUCCEEDED or FAILED
-    /// 7. Commit transaction
+    /// 1. Validate authority requirement BEFORE any DB access (fail fast)
+    /// 2. Compute canonical payload hash
+    /// 3. Begin transaction
+    /// 4. Idempotency check (replay if already completed)
+    /// 5. Insert command record (RECEIVED)
+    /// 6. Validate lease authority within transaction (if required)
+    /// 7. Execute handler within the same transaction
+    /// 8. Mark command SUCCEEDED or FAILED
+    /// 9. Commit transaction
     ///
     /// On any error before commit, the transaction rolls back automatically.
+    /// Authority validation happens BOTH before the transaction (fail fast on
+    /// missing fields) AND inside it (stale token / expired lease checks).
     pub fn execute<C, R>(
         &mut self,
         envelope: &CommandEnvelope<C>,
         command_type: &str,
+        authority_req: AuthorityRequirement,
         handler: impl FnOnce(
             &crate::persistence::transaction::Transaction,
             &C,
@@ -55,6 +62,24 @@ impl<'a> CommandEngine<'a> {
         C: Serialize,
         R: Serialize,
     {
+        // Step 0: Pre-flight authority field validation (before DB access).
+        // If the command requires lease authority but the envelope is missing
+        // attempt_id, lease_id, or fencing_token, reject immediately.
+        let resolved_authority =
+            if authority_req.requires_lease() {
+                Some(authority_req.resolve(envelope).ok_or_else(|| {
+                    CommandError::InvalidCommand {
+                        detail: format!(
+                            "command {} requires lease authority but envelope is missing \
+                         attempt_id, lease_id, or fencing_token",
+                            command_type
+                        ),
+                    }
+                })?)
+            } else {
+                None
+            };
+
         let payload_hash = canonical_payload_hash(&envelope.payload);
 
         let tx = self.store.transaction()?;
@@ -77,7 +102,39 @@ impl<'a> CommandEngine<'a> {
             &envelope.issued_at,
         )?;
 
-        // Step 3: Execute handler
+        // Step 3: Validate lease authority within transaction (if required).
+        // This checks expiry, revocation, fencing token validity, and ownership
+        // against the current DB state. Handler MUST NOT execute if this fails.
+        if let Some(ref auth) = resolved_authority {
+            LeaseService::validate_authority(
+                &tx,
+                &auth.lease_id,
+                auth.fencing_token,
+                &auth.resource,
+                &auth.attempt_id.0,
+                envelope.issued_at.0.parse::<i64>().unwrap_or(0),
+            )
+            .map_err(|e| match e {
+                crate::authority::AuthorityError::StaleAuthority { reason, .. } => {
+                    CommandError::StaleAuthority {
+                        resource_type: auth.resource.resource_type.clone(),
+                        resource_id: auth.resource.resource_id.clone(),
+                        presented_token: auth.fencing_token,
+                        current_token: auth.fencing_token,
+                        reason,
+                    }
+                }
+                _other => CommandError::StaleAuthority {
+                    resource_type: auth.resource.resource_type.clone(),
+                    resource_id: auth.resource.resource_id.clone(),
+                    presented_token: auth.fencing_token,
+                    current_token: auth.fencing_token,
+                    reason: crate::authority::model::StaleReason::LeaseNotActive,
+                },
+            })?;
+        }
+
+        // Step 4: Execute handler
         match handler(&tx, &envelope.payload, &envelope.issued_at) {
             Ok(result) => {
                 let result_json =
@@ -158,9 +215,12 @@ mod tests {
         });
 
         let result = engine
-            .execute(&envelope, "CreateProject", |tx, p, ts| {
-                handle_create_project(tx, p, ts)
-            })
+            .execute(
+                &envelope,
+                "CreateProject",
+                AuthorityRequirement::None,
+                handle_create_project,
+            )
             .unwrap();
 
         assert_eq!(result.status, CommandStatus::Succeeded);
@@ -191,17 +251,23 @@ mod tests {
 
         // First execution
         let r1 = engine
-            .execute(&envelope, "CreateProject", |tx, p, ts| {
-                handle_create_project(tx, p, ts)
-            })
+            .execute(
+                &envelope,
+                "CreateProject",
+                AuthorityRequirement::None,
+                handle_create_project,
+            )
             .unwrap();
         assert_eq!(r1.status, CommandStatus::Succeeded);
 
         // Second execution with same command_id and payload → replay
         let r2 = engine
-            .execute(&envelope, "CreateProject", |tx, p, ts| {
-                handle_create_project(tx, p, ts)
-            })
+            .execute(
+                &envelope,
+                "CreateProject",
+                AuthorityRequirement::None,
+                handle_create_project,
+            )
             .unwrap();
         assert_eq!(r2.status, CommandStatus::Succeeded);
         assert_eq!(r1.result_payload, r2.result_payload);
@@ -236,9 +302,12 @@ mod tests {
         };
 
         engine
-            .execute(&envelope1, "CreateProject", |tx, p, ts| {
-                handle_create_project(tx, p, ts)
-            })
+            .execute(
+                &envelope1,
+                "CreateProject",
+                AuthorityRequirement::None,
+                handle_create_project,
+            )
             .unwrap();
 
         // Same command_id, different payload
@@ -265,9 +334,12 @@ mod tests {
         };
 
         let err = engine
-            .execute(&envelope2, "CreateProject", |tx, p, ts| {
-                handle_create_project(tx, p, ts)
-            })
+            .execute(
+                &envelope2,
+                "CreateProject",
+                AuthorityRequirement::None,
+                handle_create_project,
+            )
             .unwrap_err();
 
         assert!(matches!(err, CommandError::DuplicateCommandMismatch { .. }));
@@ -288,16 +360,22 @@ mod tests {
 
         // First insert succeeds
         engine
-            .execute(&envelope, "CreateProject", |tx, p, ts| {
-                handle_create_project(tx, p, ts)
-            })
+            .execute(
+                &envelope,
+                "CreateProject",
+                AuthorityRequirement::None,
+                handle_create_project,
+            )
             .unwrap();
 
         // Replay returns succeeded (same payload)
         let r2 = engine
-            .execute(&envelope, "CreateProject", |tx, p, ts| {
-                handle_create_project(tx, p, ts)
-            })
+            .execute(
+                &envelope,
+                "CreateProject",
+                AuthorityRequirement::None,
+                handle_create_project,
+            )
             .unwrap();
         assert_eq!(r2.status, CommandStatus::Succeeded);
     }
@@ -316,9 +394,12 @@ mod tests {
         });
 
         engine
-            .execute(&envelope, "CreateProject", |tx, p, ts| {
-                handle_create_project(tx, p, ts)
-            })
+            .execute(
+                &envelope,
+                "CreateProject",
+                AuthorityRequirement::None,
+                handle_create_project,
+            )
             .unwrap();
 
         // Verify command record in DB
