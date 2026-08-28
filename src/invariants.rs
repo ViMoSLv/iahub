@@ -301,7 +301,10 @@ pub fn all_invariant_ids() -> Vec<&'static str> {
 
 /// Returns the count of invariants with the given coverage status.
 pub fn count_by_coverage(status: InvariantCoverage) -> usize {
-    INVARIANTS.iter().filter(|inv| inv.coverage == status).count()
+    INVARIANTS
+        .iter()
+        .filter(|inv| inv.coverage == status)
+        .count()
 }
 
 #[cfg(test)]
@@ -386,7 +389,10 @@ mod tests {
             "coverage counts must sum to total invariant count"
         );
         assert!(enforced > 0, "at least some invariants must be enforced");
-        assert!(planned > 0, "some invariants are correctly marked as planned");
+        assert!(
+            planned > 0,
+            "some invariants are correctly marked as planned"
+        );
     }
 
     #[test]

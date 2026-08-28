@@ -13,6 +13,7 @@ use super::transaction::Transaction;
 
 mod v0001_initial;
 mod v0002_leases_operations;
+mod v0003_lease_fk_relaxation;
 
 /// A single named migration step.
 struct Migration {
@@ -32,6 +33,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "v0002_leases_operations",
         apply: v0002_leases_operations::apply,
+    },
+    Migration {
+        version: 3,
+        name: "v0003_lease_fk_relaxation",
+        apply: v0003_lease_fk_relaxation::apply,
     },
 ];
 

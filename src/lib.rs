@@ -1,4 +1,5 @@
 pub mod architecture;
+pub mod authority;
 pub mod commands;
 pub mod domain;
 pub mod invariants;

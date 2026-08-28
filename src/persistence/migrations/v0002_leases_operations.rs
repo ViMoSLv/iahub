@@ -32,13 +32,12 @@ pub fn apply(tx: &Transaction) -> Result<(), PersistenceError> {
         > 0;
 
     if !has_status {
-        conn.execute_batch(
-            "ALTER TABLE leases ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE';",
-        ).map_err(|e| PersistenceError::MigrationFailed {
-            version: 2,
-            message: format!("failed to add leases.status: {}", e),
-            source: Some(e),
-        })?;
+        conn.execute_batch("ALTER TABLE leases ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE';")
+            .map_err(|e| PersistenceError::MigrationFailed {
+                version: 2,
+                message: format!("failed to add leases.status: {}", e),
+                source: Some(e),
+            })?;
     }
 
     // Add owner_attempt_id as alias for attempt_id (v0001 used attempt_id)
@@ -52,7 +51,8 @@ pub fn apply(tx: &Transaction) -> Result<(), PersistenceError> {
     if !has_owner_attempt {
         conn.execute_batch(
             "ALTER TABLE leases ADD COLUMN owner_attempt_id TEXT REFERENCES task_attempts(id);",
-        ).map_err(|e| PersistenceError::MigrationFailed {
+        )
+        .map_err(|e| PersistenceError::MigrationFailed {
             version: 2,
             message: format!("failed to add leases.owner_attempt_id: {}", e),
             source: Some(e),
@@ -60,7 +60,8 @@ pub fn apply(tx: &Transaction) -> Result<(), PersistenceError> {
         // Copy existing attempt_id values to owner_attempt_id
         conn.execute_batch(
             "UPDATE leases SET owner_attempt_id = attempt_id WHERE owner_attempt_id IS NULL;",
-        ).map_err(|e| PersistenceError::MigrationFailed {
+        )
+        .map_err(|e| PersistenceError::MigrationFailed {
             version: 2,
             message: format!("failed to backfill leases.owner_attempt_id: {}", e),
             source: Some(e),
@@ -76,21 +77,19 @@ pub fn apply(tx: &Transaction) -> Result<(), PersistenceError> {
         > 0;
 
     if !has_created_at {
-        conn.execute_batch(
-            "ALTER TABLE leases ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;",
-        ).map_err(|e| PersistenceError::MigrationFailed {
-            version: 2,
-            message: format!("failed to add leases.created_at: {}", e),
-            source: Some(e),
-        })?;
+        conn.execute_batch("ALTER TABLE leases ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;")
+            .map_err(|e| PersistenceError::MigrationFailed {
+                version: 2,
+                message: format!("failed to add leases.created_at: {}", e),
+                source: Some(e),
+            })?;
         // Backfill from issued_at as reasonable default
-        conn.execute_batch(
-            "UPDATE leases SET created_at = issued_at WHERE created_at = 0;",
-        ).map_err(|e| PersistenceError::MigrationFailed {
-            version: 2,
-            message: format!("failed to backfill leases.created_at: {}", e),
-            source: Some(e),
-        })?;
+        conn.execute_batch("UPDATE leases SET created_at = issued_at WHERE created_at = 0;")
+            .map_err(|e| PersistenceError::MigrationFailed {
+                version: 2,
+                message: format!("failed to backfill leases.created_at: {}", e),
+                source: Some(e),
+            })?;
     }
 
     let has_updated_at: bool = conn
@@ -101,26 +100,25 @@ pub fn apply(tx: &Transaction) -> Result<(), PersistenceError> {
         > 0;
 
     if !has_updated_at {
-        conn.execute_batch(
-            "ALTER TABLE leases ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;",
-        ).map_err(|e| PersistenceError::MigrationFailed {
-            version: 2,
-            message: format!("failed to add leases.updated_at: {}", e),
-            source: Some(e),
-        })?;
-        conn.execute_batch(
-            "UPDATE leases SET updated_at = issued_at WHERE updated_at = 0;",
-        ).map_err(|e| PersistenceError::MigrationFailed {
-            version: 2,
-            message: format!("failed to backfill leases.updated_at: {}", e),
-            source: Some(e),
-        })?;
+        conn.execute_batch("ALTER TABLE leases ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;")
+            .map_err(|e| PersistenceError::MigrationFailed {
+                version: 2,
+                message: format!("failed to add leases.updated_at: {}", e),
+                source: Some(e),
+            })?;
+        conn.execute_batch("UPDATE leases SET updated_at = issued_at WHERE updated_at = 0;")
+            .map_err(|e| PersistenceError::MigrationFailed {
+                version: 2,
+                message: format!("failed to backfill leases.updated_at: {}", e),
+                source: Some(e),
+            })?;
     }
 
     // Add index on owner_attempt_id if not present
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_leases_owner_v2 ON leases(owner_attempt_id);",
-    ).map_err(|e| PersistenceError::MigrationFailed {
+    )
+    .map_err(|e| PersistenceError::MigrationFailed {
         version: 2,
         message: format!("failed to create idx_leases_owner_v2: {}", e),
         source: Some(e),
@@ -129,7 +127,8 @@ pub fn apply(tx: &Transaction) -> Result<(), PersistenceError> {
     // Add composite index for expiry scanning
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_leases_expiry_v2 ON leases(status, expires_at);",
-    ).map_err(|e| PersistenceError::MigrationFailed {
+    )
+    .map_err(|e| PersistenceError::MigrationFailed {
         version: 2,
         message: format!("failed to create idx_leases_expiry_v2: {}", e),
         source: Some(e),
@@ -143,20 +142,21 @@ pub fn apply(tx: &Transaction) -> Result<(), PersistenceError> {
     // ADR-0003 needs: recovery_hint, completed_at, payload (rename input_payload?)
 
     let has_recovery_hint: bool = conn
-        .prepare("SELECT COUNT(*) FROM pragma_table_info('operations') WHERE name = 'recovery_hint'")
+        .prepare(
+            "SELECT COUNT(*) FROM pragma_table_info('operations') WHERE name = 'recovery_hint'",
+        )
         .map_err(|e| PersistenceError::Transaction { source: e })?
         .query_row([], |r| r.get::<_, i64>(0))
         .map_err(|e| PersistenceError::Transaction { source: e })?
         > 0;
 
     if !has_recovery_hint {
-        conn.execute_batch(
-            "ALTER TABLE operations ADD COLUMN recovery_hint TEXT;",
-        ).map_err(|e| PersistenceError::MigrationFailed {
-            version: 2,
-            message: format!("failed to add operations.recovery_hint: {}", e),
-            source: Some(e),
-        })?;
+        conn.execute_batch("ALTER TABLE operations ADD COLUMN recovery_hint TEXT;")
+            .map_err(|e| PersistenceError::MigrationFailed {
+                version: 2,
+                message: format!("failed to add operations.recovery_hint: {}", e),
+                source: Some(e),
+            })?;
     }
 
     let has_completed_at: bool = conn
@@ -167,19 +167,19 @@ pub fn apply(tx: &Transaction) -> Result<(), PersistenceError> {
         > 0;
 
     if !has_completed_at {
-        conn.execute_batch(
-            "ALTER TABLE operations ADD COLUMN completed_at INTEGER;",
-        ).map_err(|e| PersistenceError::MigrationFailed {
-            version: 2,
-            message: format!("failed to add operations.completed_at: {}", e),
-            source: Some(e),
-        })?;
+        conn.execute_batch("ALTER TABLE operations ADD COLUMN completed_at INTEGER;")
+            .map_err(|e| PersistenceError::MigrationFailed {
+                version: 2,
+                message: format!("failed to add operations.completed_at: {}", e),
+                source: Some(e),
+            })?;
     }
 
     // Ensure command index exists (v0001 only had status index)
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_operations_command_v2 ON operations(command_id);",
-    ).map_err(|e| PersistenceError::MigrationFailed {
+    )
+    .map_err(|e| PersistenceError::MigrationFailed {
         version: 2,
         message: format!("failed to create idx_operations_command_v2: {}", e),
         source: Some(e),
@@ -194,13 +194,12 @@ pub fn apply(tx: &Transaction) -> Result<(), PersistenceError> {
         > 0;
 
     if !has_cancel_requested {
-        conn.execute_batch(
-            "ALTER TABLE task_attempts ADD COLUMN cancel_requested_at INTEGER;",
-        ).map_err(|e| PersistenceError::MigrationFailed {
-            version: 2,
-            message: format!("failed to add task_attempts.cancel_requested_at: {}", e),
-            source: Some(e),
-        })?;
+        conn.execute_batch("ALTER TABLE task_attempts ADD COLUMN cancel_requested_at INTEGER;")
+            .map_err(|e| PersistenceError::MigrationFailed {
+                version: 2,
+                message: format!("failed to add task_attempts.cancel_requested_at: {}", e),
+                source: Some(e),
+            })?;
     }
 
     let has_term_evidence: bool = conn
@@ -211,13 +210,12 @@ pub fn apply(tx: &Transaction) -> Result<(), PersistenceError> {
         > 0;
 
     if !has_term_evidence {
-        conn.execute_batch(
-            "ALTER TABLE task_attempts ADD COLUMN termination_evidence TEXT;",
-        ).map_err(|e| PersistenceError::MigrationFailed {
-            version: 2,
-            message: format!("failed to add task_attempts.termination_evidence: {}", e),
-            source: Some(e),
-        })?;
+        conn.execute_batch("ALTER TABLE task_attempts ADD COLUMN termination_evidence TEXT;")
+            .map_err(|e| PersistenceError::MigrationFailed {
+                version: 2,
+                message: format!("failed to add task_attempts.termination_evidence: {}", e),
+                source: Some(e),
+            })?;
     }
 
     let has_cancel_indet: bool = conn
@@ -230,9 +228,13 @@ pub fn apply(tx: &Transaction) -> Result<(), PersistenceError> {
     if !has_cancel_indet {
         conn.execute_batch(
             "ALTER TABLE task_attempts ADD COLUMN cancel_indeterminate_reason TEXT;",
-        ).map_err(|e| PersistenceError::MigrationFailed {
+        )
+        .map_err(|e| PersistenceError::MigrationFailed {
             version: 2,
-            message: format!("failed to add task_attempts.cancel_indeterminate_reason: {}", e),
+            message: format!(
+                "failed to add task_attempts.cancel_indeterminate_reason: {}",
+                e
+            ),
             source: Some(e),
         })?;
     }
