@@ -5,8 +5,8 @@
 //! payloads always produce the same hash, and different payloads produce
 //! different hashes.
 //!
-//! We use serde_json with sorted keys to ensure field ordering does not
-//! affect the hash. The payload is hashed as canonical JSON bytes.
+//! We canonicalize via `serde_json::Value` to guarantee sorted object keys
+//! regardless of the original struct field order or map type (HashMap vs BTreeMap).
 //! Serialization failures return a typed error instead of panicking.
 
 use serde::Serialize;
@@ -34,13 +34,22 @@ impl std::error::Error for PayloadHashError {}
 
 /// Compute a deterministic SHA-256 hex digest of a serializable payload.
 ///
-/// Uses `serde_json` with sorted keys to guarantee canonical representation.
-/// Returns an error if serialization fails instead of panicking.
+/// Canonicalizes through `serde_json::Value` to ensure object keys are always
+/// sorted alphabetically, making the hash independent of struct field declaration
+/// order or HashMap iteration order. Returns an error if serialization fails.
 pub fn canonical_payload_hash<T: Serialize>(payload: &T) -> Result<String, PayloadHashError> {
-    let canonical =
-        serde_json::to_vec(payload).map_err(|e| PayloadHashError::SerializationFailed {
+    // Serialize to Value first — this normalizes all maps to BTreeMap internally,
+    // guaranteeing sorted key output when re-serialized to bytes.
+    let value =
+        serde_json::to_value(payload).map_err(|e| PayloadHashError::SerializationFailed {
             detail: e.to_string(),
         })?;
+
+    let canonical =
+        serde_json::to_vec(&value).map_err(|e| PayloadHashError::SerializationFailed {
+            detail: e.to_string(),
+        })?;
+
     let mut hasher = Sha256::new();
     hasher.update(&canonical);
     Ok(hex_encode(&hasher.finalize()))
@@ -127,8 +136,8 @@ mod tests {
 
     /// Proves that BTreeMap key ordering does not affect the hash.
     /// Two maps with identical entries inserted in different orders
-    /// must produce the same canonical hash because serde_json serializes
-    /// BTreeMap keys in sorted order.
+    /// must produce the same canonical hash because serde_json::Value
+    /// normalizes all objects to sorted keys.
     #[test]
     fn map_key_order_does_not_affect_hash() {
         let mut map_a = BTreeMap::new();
