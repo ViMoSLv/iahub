@@ -62,7 +62,7 @@
 | INV-021 | Repeated command_id with identical intent returns previously committed result without re-execution. | `commands::engine::tests::execute_replays_on_duplicate_command_id` | ENFORCED |
 | INV-022 | Repeated command_id with different intent returns COMMAND_ID_REUSE rejection. | `commands::engine::tests::execute_rejects_duplicate_with_different_payload` | ENFORCED |
 | INV-023 | Concurrent updates to the same entity with stale version return STATE_CONFLICT. | `persistence::repositories::project::tests::update_with_stale_version_returns_conflict` | ENFORCED |
-| INV-024 | Commands bearing an expired or superseded fencing token return STALE_AUTHORITY. | `test_inv_024_fencing_token_enforcement` | PLANNED |
+| INV-024 | Commands bearing an expired or superseded fencing token return STALE_AUTHORITY. | `authority::service::tests::stale_authority_after_revoke_and_reacquire` | ENFORCED |
 | INV-025 | Only one Attempt per Task may be in an active state (LEASED, STARTING, ACTIVE, SUBMITTED) at any time. | `domain::tests::attempt_active_states_match_inv_025` | ENFORCED |
 
 ## Workspace and Scope Invariants (26–27)
@@ -86,7 +86,7 @@
 |----|-----------|---------------|----------|
 | INV-031 | Startup reconcile scans leases, operations, workspaces, sessions, and tasks before accepting new commands. | `test_inv_031_startup_reconcile` | PLANNED |
 | INV-032 | Process identity uses PID plus start timestamp or nonce; PID alone is insufficient. | `test_inv_032_process_identity` | PLANNED |
-| INV-033 | Cancellation distinguishes CANCEL_REQUESTED from observed CANCELLED; indeterminate states are preserved. | `test_inv_033_cancellation_semantics` | PLANNED |
+| INV-033 | Cancellation distinguishes CANCEL_REQUESTED from observed CANCELLED; indeterminate states are preserved. | `domain::tests::inv_033_direct_active_to_cancelled_is_forbidden` | ENFORCED |
 
 ## Cleanup and Artifact Invariants (34–36)
 

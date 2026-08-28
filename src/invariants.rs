@@ -177,8 +177,8 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-024",
         statement: "Commands bearing an expired or superseded fencing token return STALE_AUTHORITY.",
-        test_fn: "test_inv_024_fencing_token_enforcement",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "authority::service::tests::stale_authority_after_revoke_and_reacquire",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-025",
@@ -234,8 +234,8 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-033",
         statement: "Cancellation distinguishes CANCEL_REQUESTED from observed CANCELLED; indeterminate states are preserved.",
-        test_fn: "test_inv_033_cancellation_semantics",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "domain::tests::inv_033_direct_active_to_cancelled_is_forbidden",
+        coverage: InvariantCoverage::Enforced,
     },
     // ── Cleanup and Artifacts (34–36) ────────────────────────────────────
     Invariant {
