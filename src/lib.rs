@@ -3,6 +3,7 @@ pub mod authority;
 pub mod commands;
 pub mod domain;
 pub mod invariants;
+pub mod operations;
 pub mod persistence;
 
 pub use architecture::*;
