@@ -47,6 +47,73 @@ impl<'conn> Transaction<'conn> {
     pub fn conn(&self) -> &Connection {
         self.inner.as_ref().expect("transaction already consumed")
     }
+
+    /// Create a savepoint within this transaction.
+    ///
+    /// Savepoints allow partial rollback: if a handler fails, we can roll back
+    /// only the handler's mutations while preserving the command record and
+    /// idempotency state inserted before the savepoint.
+    ///
+    /// Returns a `Savepoint` guard that rolls back on drop unless committed.
+    pub fn savepoint(&self, name: &str) -> Result<Savepoint<'_>, PersistenceError> {
+        self.conn()
+            .execute_batch(&format!("SAVEPOINT {};", name))
+            .map_err(|e| PersistenceError::Transaction { source: e })?;
+        Ok(Savepoint {
+            conn: self.conn(),
+            name: name.to_string(),
+            committed: false,
+        })
+    }
+}
+
+/// A savepoint within a transaction. Rolls back on drop unless explicitly
+/// released (committed). This enables atomic handler execution: if the handler
+/// fails, its mutations are discarded while the surrounding transaction
+/// (command record, idempotency state) remains intact.
+pub struct Savepoint<'conn> {
+    conn: &'conn Connection,
+    name: String,
+    committed: bool,
+}
+
+impl Savepoint<'_> {
+    /// Release (commit) the savepoint, making its changes permanent within
+    /// the enclosing transaction.
+    pub fn release(mut self) -> Result<(), PersistenceError> {
+        self.committed = true;
+        self.conn
+            .execute_batch(&format!("RELEASE SAVEPOINT {};", self.name))
+            .map_err(|e| PersistenceError::Transaction { source: e })
+    }
+
+    /// Explicitly roll back to this savepoint, discarding all changes made
+    /// after it was created. The enclosing transaction continues.
+    pub fn rollback(mut self) -> Result<(), PersistenceError> {
+        self.committed = true; // Prevent double-rollback in Drop
+        self.conn
+            .execute_batch(&format!("ROLLBACK TO SAVEPOINT {};", self.name))
+            .map_err(|e| PersistenceError::Transaction { source: e })
+    }
+
+    /// Access the underlying connection for executing statements within
+    /// this savepoint scope.
+    pub fn conn(&self) -> &Connection {
+        self.conn
+    }
+}
+
+impl Drop for Savepoint<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            // Auto-rollback on drop if not explicitly released or rolled back.
+            // Ignore errors during drop — the enclosing transaction will
+            // handle cleanup.
+            let _ = self
+                .conn
+                .execute_batch(&format!("ROLLBACK TO SAVEPOINT {};", self.name));
+        }
+    }
 }
 
 impl Drop for Transaction<'_> {

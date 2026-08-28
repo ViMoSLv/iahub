@@ -134,9 +134,18 @@ impl<'a> CommandEngine<'a> {
             })?;
         }
 
-        // Step 4: Execute handler
-        match handler(&tx, &envelope.payload, &envelope.issued_at) {
+        // Step 4: Execute handler within a savepoint for atomicity.
+        // If the handler fails, its mutations are rolled back via the savepoint,
+        // but the command record (RECEIVED) persists so we can mark it FAILED.
+        // This prevents partial state from leaking into the database.
+        //
+        // The handler still receives &Transaction (unchanged API). The savepoint
+        // is created on the same connection and controls rollback scope.
+        let sp = tx.savepoint("handler_effects")?;
+        let handler_result = handler(&tx, &envelope.payload, &envelope.issued_at);
+        match handler_result {
             Ok(result) => {
+                sp.release()?;
                 let result_json =
                     serde_json::to_string(&result).map_err(|e| CommandError::InvalidCommand {
                         detail: format!("failed to serialize result: {}", e),
@@ -156,6 +165,8 @@ impl<'a> CommandEngine<'a> {
                 })
             }
             Err(err) => {
+                // Roll back handler mutations; command record survives.
+                sp.rollback()?;
                 let error_json = serde_json::to_string(&err.to_string()).unwrap_or_default();
                 store::complete_failure(
                     &tx,
