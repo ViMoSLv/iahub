@@ -26,10 +26,16 @@ pub enum IdempotencyCheck {
 }
 
 /// Check idempotency for a command. Returns either `New` (proceed) or
-/// `Replay` (return cached result). Returns `Err` on payload mismatch.
+/// `Replay` (return cached result). Returns `Err` on payload or type mismatch.
+///
+/// The identity of a command for idempotency purposes is the triple:
+/// `(command_id, command_type, payload_hash)`. Reusing a `command_id` with
+/// a different `command_type` is rejected even if the payload hash matches,
+/// preventing cross-command replay attacks.
 pub fn check_idempotency(
     tx: &Transaction,
     command_id: &CommandId,
+    command_type: &str,
     payload_hash: &str,
 ) -> Result<IdempotencyCheck, CommandError> {
     let record = match store::find_by_id(tx, command_id)? {
@@ -37,7 +43,15 @@ pub fn check_idempotency(
         None => return Ok(IdempotencyCheck::New),
     };
 
-    // Payload mismatch: same command_id, different intent
+    // Type mismatch: same command_id reused for a different command type.
+    // This is always an error regardless of payload hash.
+    if record.command_type != command_type {
+        return Err(CommandError::DuplicateCommandMismatch {
+            command_id: command_id.clone(),
+        });
+    }
+
+    // Payload mismatch: same command_id + type, different intent
     if record.payload_hash != payload_hash {
         return Err(CommandError::DuplicateCommandMismatch {
             command_id: command_id.clone(),
@@ -81,7 +95,13 @@ mod tests {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
 
-        let result = check_idempotency(&tx, &CommandId::from("cmd-new"), "hash-abc").unwrap();
+        let result = check_idempotency(
+            &tx,
+            &CommandId::from("cmd-new"),
+            "CreateProject",
+            "hash-abc",
+        )
+        .unwrap();
         assert!(matches!(result, IdempotencyCheck::New));
 
         tx.commit().unwrap();
@@ -97,7 +117,7 @@ mod tests {
         store::insert_command(&tx, &cmd_id, "CreateProject", "hash-abc", &ts).unwrap();
         store::complete_success(&tx, &cmd_id, "{\"id\":\"p-1\"}", &ts).unwrap();
 
-        let result = check_idempotency(&tx, &cmd_id, "hash-abc").unwrap();
+        let result = check_idempotency(&tx, &cmd_id, "CreateProject", "hash-abc").unwrap();
         match result {
             IdempotencyCheck::Replay(r) => {
                 assert_eq!(r.status, CommandStatus::Succeeded);
@@ -120,7 +140,7 @@ mod tests {
         store::insert_command(&tx, &cmd_id, "CreateRun", "hash-def", &ts).unwrap();
         store::complete_failure(&tx, &cmd_id, "{\"error\":\"bad\"}", &ts).unwrap();
 
-        let result = check_idempotency(&tx, &cmd_id, "hash-def").unwrap();
+        let result = check_idempotency(&tx, &cmd_id, "CreateRun", "hash-def").unwrap();
         match result {
             IdempotencyCheck::Replay(r) => {
                 assert_eq!(r.status, CommandStatus::Failed);
@@ -143,8 +163,31 @@ mod tests {
         store::insert_command(&tx, &cmd_id, "CreateProject", "hash-aaa", &ts).unwrap();
         store::complete_success(&tx, &cmd_id, "{}", &ts).unwrap();
 
-        let err = check_idempotency(&tx, &cmd_id, "hash-bbb").unwrap_err();
+        let err = check_idempotency(&tx, &cmd_id, "CreateProject", "hash-bbb").unwrap_err();
         assert!(matches!(err, CommandError::DuplicateCommandMismatch { .. }));
+
+        tx.commit().unwrap();
+    }
+
+    /// Same command_id + same payload_hash but different command_type must be
+    /// rejected. This prevents cross-command replay where a CreateProject result
+    /// is incorrectly returned for a CreateRun command reusing the same ID.
+    #[test]
+    fn different_command_type_is_rejected() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let tx = store.transaction().unwrap();
+
+        let cmd_id = CommandId::from("cmd-cross");
+        let ts = Timestamp("1000".to_string());
+        store::insert_command(&tx, &cmd_id, "CreateProject", "hash-same", &ts).unwrap();
+        store::complete_success(&tx, &cmd_id, "{}", &ts).unwrap();
+
+        // Same ID, same hash, but different command type → reject
+        let err = check_idempotency(&tx, &cmd_id, "CreateRun", "hash-same").unwrap_err();
+        assert!(
+            matches!(err, CommandError::DuplicateCommandMismatch { .. }),
+            "cross-command replay must be rejected"
+        );
 
         tx.commit().unwrap();
     }
@@ -159,7 +202,7 @@ mod tests {
         store::insert_command(&tx, &cmd_id, "CreateProject", "hash-ccc", &ts).unwrap();
         // Do NOT complete — leave as RECEIVED
 
-        let err = check_idempotency(&tx, &cmd_id, "hash-ccc").unwrap_err();
+        let err = check_idempotency(&tx, &cmd_id, "CreateProject", "hash-ccc").unwrap_err();
         assert!(matches!(err, CommandError::InvalidCommand { .. }));
 
         tx.rollback().unwrap();

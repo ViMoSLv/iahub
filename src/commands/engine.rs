@@ -88,8 +88,13 @@ impl<'a> CommandEngine<'a> {
 
         let tx = self.store.transaction()?;
 
-        // Step 1: Idempotency check
-        match idempotency::check_idempotency(&tx, &envelope.command_id, &payload_hash)? {
+        // Step 1: Idempotency check (includes command_type in identity)
+        match idempotency::check_idempotency(
+            &tx,
+            &envelope.command_id,
+            command_type,
+            &payload_hash,
+        )? {
             IdempotencyCheck::Replay(result) => {
                 tx.commit()?;
                 return Ok(result);
