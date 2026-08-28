@@ -32,7 +32,13 @@ pub fn insert_command(
     payload_hash: &str,
     issued_at: &Timestamp,
 ) -> Result<(), PersistenceError> {
-    let ts: i64 = issued_at.0.parse().unwrap_or(0); // Timestamp is opaque string; parse as millis
+    let ts: i64 = issued_at
+        .0
+        .parse()
+        .map_err(|e| PersistenceError::Serialization {
+            context: "commands.created_at",
+            detail: format!("invalid timestamp '{}': {}", issued_at.0, e),
+        })?;
     tx.conn()
         .execute(
             "INSERT INTO commands (command_id, command_type, payload_hash, status, created_at)
@@ -83,7 +89,13 @@ pub fn complete_success(
     result_payload: &str,
     completed_at: &Timestamp,
 ) -> Result<(), PersistenceError> {
-    let ts: i64 = completed_at.0.parse().unwrap_or(0);
+    let ts: i64 = completed_at
+        .0
+        .parse()
+        .map_err(|e| PersistenceError::Serialization {
+            context: "commands.completed_at",
+            detail: format!("invalid timestamp '{}': {}", completed_at.0, e),
+        })?;
     tx.conn()
         .execute(
             "UPDATE commands SET status = ?1, result_payload = ?2, completed_at = ?3
@@ -101,7 +113,13 @@ pub fn complete_failure(
     error_payload: &str,
     completed_at: &Timestamp,
 ) -> Result<(), PersistenceError> {
-    let ts: i64 = completed_at.0.parse().unwrap_or(0);
+    let ts: i64 = completed_at
+        .0
+        .parse()
+        .map_err(|e| PersistenceError::Serialization {
+            context: "commands.completed_at",
+            detail: format!("invalid timestamp '{}': {}", completed_at.0, e),
+        })?;
     tx.conn()
         .execute(
             "UPDATE commands SET status = ?1, error_payload = ?2, completed_at = ?3

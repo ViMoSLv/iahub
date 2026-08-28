@@ -40,8 +40,14 @@ pub fn handle_create_project(
     issued_at: &Timestamp,
 ) -> Result<CreateProjectResult, CommandError> {
     // The `projects` table stores timestamps as INTEGER (unix millis).
-    // Timestamp is an opaque string in the domain; parse to i64 for persistence.
-    let ts_str = format!("{}", issued_at.0.parse::<i64>().unwrap_or(0));
+    // Validate that the timestamp parses correctly; fail closed on invalid input.
+    let ts_i64: i64 = issued_at
+        .0
+        .parse()
+        .map_err(|e| CommandError::InvalidCommand {
+            detail: format!("invalid issued_at timestamp '{}': {}", issued_at.0, e),
+        })?;
+    let ts_str = format!("{}", ts_i64);
     let ts = Timestamp(ts_str);
 
     let row = ProjectRow {
