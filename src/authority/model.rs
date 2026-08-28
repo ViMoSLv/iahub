@@ -3,25 +3,14 @@
 //! Core types for durable lease management with monotonic fencing tokens.
 //! All status transitions are validated at the type level; unknown statuses
 //! fail closed during deserialization.
+//!
+//! IMPORTANT: This module uses the CANONICAL domain types from `crate::domain`
+//! for LeaseId and FencingToken. There is exactly one type per concept in the
+//! entire codebase. No duplication, no silent conversions.
 
+use crate::domain::{FencingToken, LeaseId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-
-/// Unique identifier for a lease instance.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct LeaseId(pub String);
-
-impl fmt::Display for LeaseId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for LeaseId {
-    fn from(s: String) -> Self {
-        LeaseId(s)
-    }
-}
 
 /// Composite resource identifier: (resource_type, resource_id).
 /// This is the granularity at which fencing tokens are monotonically allocated.
@@ -43,24 +32,6 @@ impl ResourceId {
 impl fmt::Display for ResourceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.resource_type, self.resource_id)
-    }
-}
-
-/// Monotonic fencing token. Source of truth is SQLite; never generated from
-/// timestamps, UUIDs, or in-memory counters. Each new lease for a given
-/// ResourceId receives a token strictly greater than all previous tokens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct FencingToken(pub u64);
-
-impl FencingToken {
-    pub fn next(self) -> Self {
-        FencingToken(self.0 + 1)
-    }
-}
-
-impl fmt::Display for FencingToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
     }
 }
 
@@ -105,6 +76,7 @@ impl LeaseStatus {
 }
 
 /// Complete persisted lease record. Maps directly to the `leases` table schema.
+/// Uses canonical domain types for LeaseId and FencingToken.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseRecord {
     pub id: LeaseId,
@@ -156,13 +128,11 @@ pub struct AcquireResult {
     pub lease: LeaseRecord,
 }
 
-/// Result of authority validation.
+/// Validated authority proof returned by validate_authority on success.
+/// Contains the confirmed lease record so callers don't need to re-fetch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AuthorityValidation {
-    /// Authority is valid and current.
-    Valid,
-    /// Authority is stale: lease expired, revoked, or superseded by higher token.
-    Stale { reason: StaleReason },
+pub struct ValidatedAuthority {
+    pub lease: LeaseRecord,
 }
 
 /// Specific reason why authority is stale.
@@ -222,7 +192,7 @@ mod tests {
 
     #[test]
     fn fencing_token_next_is_monotonic() {
-        let t = FencingToken(1);
+        let t = FencingToken::INITIAL;
         assert_eq!(t.next(), FencingToken(2));
         assert_eq!(t.next().next(), FencingToken(3));
     }
@@ -269,7 +239,6 @@ mod tests {
             created_at: 100,
             updated_at: 100,
         };
-
         assert!(!lease.is_expired_at(199));
         assert!(lease.is_expired_at(200));
         assert!(lease.is_expired_at(201));
@@ -291,12 +260,23 @@ mod tests {
             created_at: 100,
             updated_at: 150,
         };
-
         // Even though now > expires_at, revoked lease doesn't report "expired"
         // because it's already in a terminal state.
         assert!(!lease.is_expired_at(300));
-
         lease.status = LeaseStatus::Expired;
         assert!(!lease.is_expired_at(300)); // already expired, not "newly" expired
+    }
+
+    #[test]
+    fn canonical_types_are_domain_types() {
+        // Compile-time proof: authority model uses domain types directly
+        let _lease_id: LeaseId = LeaseId("test".into());
+        let _token: FencingToken = FencingToken::INITIAL;
+
+        // These are the SAME types as crate::domain::LeaseId and crate::domain::FencingToken
+        let domain_id: crate::domain::LeaseId = _lease_id;
+        let domain_token: crate::domain::FencingToken = _token;
+        assert_eq!(domain_id.0, "test");
+        assert_eq!(domain_token.0, 1);
     }
 }

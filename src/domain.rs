@@ -118,6 +118,12 @@ impl FencingToken {
     }
 }
 
+impl fmt::Display for FencingToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Timestamps (opaque string wrapper — no chrono dependency in pure domain)
 // ---------------------------------------------------------------------------

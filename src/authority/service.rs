@@ -12,10 +12,11 @@
 
 use super::error::AuthorityError;
 use super::model::{
-    AcquireRequest, AcquireResult, AuthorityValidation, FencingToken, LeaseId, LeaseRecord,
-    LeaseStatus, ResourceId, StaleReason,
+    AcquireRequest, AcquireResult, LeaseRecord, LeaseStatus, ResourceId, StaleReason,
+    ValidatedAuthority,
 };
 use super::repository;
+use crate::domain::{FencingToken, LeaseId};
 use crate::persistence::transaction::Transaction;
 
 /// LeaseService provides all authority operations. It is stateless;
@@ -87,8 +88,12 @@ impl LeaseService {
     }
 
     /// Validate that a presented authority (lease_id + fencing_token) is current
-    /// and valid for the given resource and attempt. Returns StaleAuthority if
-    /// any check fails. This MUST be called before executing any protected command.
+    /// and valid for the given resource and attempt.
+    ///
+    /// Returns `Ok(ValidatedAuthority)` on success, or `Err(AuthorityError::StaleAuthority)`
+    /// if ANY check fails. There is no success-path stale result — callers cannot
+    /// accidentally ignore a stale authority. This MUST be called before executing
+    /// any protected command.
     pub fn validate_authority(
         tx: &Transaction,
         lease_id: &LeaseId,
@@ -96,11 +101,12 @@ impl LeaseService {
         expected_resource: &ResourceId,
         expected_attempt: &str,
         now: i64,
-    ) -> Result<AuthorityValidation, AuthorityError> {
+    ) -> Result<ValidatedAuthority, AuthorityError> {
         let lease = match repository::find_by_id(tx, lease_id)? {
             Some(l) => l,
             None => {
-                return Ok(AuthorityValidation::Stale {
+                return Err(AuthorityError::StaleAuthority {
+                    lease_id: lease_id.clone(),
                     reason: StaleReason::LeaseNotFound,
                 });
             }
@@ -108,7 +114,8 @@ impl LeaseService {
 
         // Check resource match
         if lease.resource != *expected_resource {
-            return Ok(AuthorityValidation::Stale {
+            return Err(AuthorityError::StaleAuthority {
+                lease_id: lease_id.clone(),
                 reason: StaleReason::WrongOwner {
                     expected_attempt: expected_attempt.into(),
                     actual_attempt: lease.owner_attempt_id,
@@ -118,7 +125,8 @@ impl LeaseService {
 
         // Check owner match
         if lease.owner_attempt_id != expected_attempt {
-            return Ok(AuthorityValidation::Stale {
+            return Err(AuthorityError::StaleAuthority {
+                lease_id: lease_id.clone(),
                 reason: StaleReason::WrongOwner {
                     expected_attempt: expected_attempt.into(),
                     actual_attempt: lease.owner_attempt_id,
@@ -129,12 +137,14 @@ impl LeaseService {
         // Check status
         match lease.status {
             LeaseStatus::Revoked => {
-                return Ok(AuthorityValidation::Stale {
+                return Err(AuthorityError::StaleAuthority {
+                    lease_id: lease_id.clone(),
                     reason: StaleReason::LeaseRevoked,
                 });
             }
             LeaseStatus::Expired => {
-                return Ok(AuthorityValidation::Stale {
+                return Err(AuthorityError::StaleAuthority {
+                    lease_id: lease_id.clone(),
                     reason: StaleReason::LeaseExpired,
                 });
             }
@@ -143,14 +153,16 @@ impl LeaseService {
 
         // Check runtime expiry (lease may still be ACTIVE in DB but past expires_at)
         if now >= lease.expires_at {
-            return Ok(AuthorityValidation::Stale {
+            return Err(AuthorityError::StaleAuthority {
+                lease_id: lease_id.clone(),
                 reason: StaleReason::LeaseExpired,
             });
         }
 
         // Check fencing token: must match exactly AND not be superseded
         if presented_token != lease.fencing_token {
-            return Ok(AuthorityValidation::Stale {
+            return Err(AuthorityError::StaleAuthority {
+                lease_id: lease_id.clone(),
                 reason: StaleReason::TokenMismatch {
                     expected: presented_token,
                     actual: lease.fencing_token,
@@ -163,14 +175,15 @@ impl LeaseService {
         // get_next_fencing_token returns max+1, so current max is current_max - 1
         let current_max_token = FencingToken(current_max.0.saturating_sub(1));
         if current_max_token > lease.fencing_token {
-            return Ok(AuthorityValidation::Stale {
+            return Err(AuthorityError::StaleAuthority {
+                lease_id: lease_id.clone(),
                 reason: StaleReason::SupersededByHigherToken {
                     current: current_max_token,
                 },
             });
         }
 
-        Ok(AuthorityValidation::Valid)
+        Ok(ValidatedAuthority { lease })
     }
 
     /// Update heartbeat timestamp. Does NOT extend expires_at per ADR-0004.
@@ -261,6 +274,31 @@ mod tests {
         ResourceId::new("task", id)
     }
 
+    /// Insert prerequisite task and attempt rows so that lease FK constraints
+    /// are satisfied. v0004 restored the owner_attempt_id → task_attempts FK.
+    fn ensure_attempt_exists(store: &mut SqliteStore, attempt_id: &str, task_id: &str) {
+        let tx = store.transaction().unwrap();
+        // Insert run (required by tasks FK)
+        let _ = tx.conn().execute(
+            "INSERT OR IGNORE INTO runs (id, project_id, objective, status, version, created_at, updated_at)
+             VALUES ('run-test', 'proj-test', 'test', 'DRAFT', 1, 0, 0)",
+            [],
+        );
+        // Insert task (required by task_attempts FK)
+        let _ = tx.conn().execute(
+            "INSERT OR IGNORE INTO tasks (id, run_id, title, objective, status, priority, version, created_at, updated_at)
+             VALUES (?1, 'run-test', 'test task', 'test', 'CREATED', 0, 1, 0, 0)",
+            [task_id],
+        );
+        // Insert attempt
+        let _ = tx.conn().execute(
+            "INSERT OR IGNORE INTO task_attempts (id, task_id, attempt_number, status, version, created_at, updated_at)
+             VALUES (?1, ?2, 1, 'CREATED', 1, 0, 0)",
+            [attempt_id, task_id],
+        );
+        tx.commit().unwrap();
+    }
+
     fn acquire_lease(
         store: &mut SqliteStore,
         resource: &ResourceId,
@@ -268,6 +306,9 @@ mod tests {
         ttl: u64,
         now: i64,
     ) -> LeaseRecord {
+        // Ensure the attempt exists for FK integrity (v0004 restored FK)
+        ensure_attempt_exists(store, attempt, &resource.resource_id);
+
         let tx = store.transaction().unwrap();
         let result = LeaseService::acquire(
             &tx,
@@ -333,7 +374,7 @@ mod tests {
         let lease = acquire_lease(&mut store, &resource, "att-1", 300, 1000);
 
         let tx = store.transaction().unwrap();
-        let result = LeaseService::validate_authority(
+        let validated = LeaseService::validate_authority(
             &tx,
             &lease.id,
             lease.fencing_token,
@@ -343,7 +384,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result, AuthorityValidation::Valid);
+        assert_eq!(validated.lease.id, lease.id);
+        assert_eq!(validated.lease.fencing_token, lease.fencing_token);
         tx.rollback().unwrap();
     }
 
@@ -354,7 +396,7 @@ mod tests {
         let lease = acquire_lease(&mut store, &resource, "att-1", 300, 1000);
 
         let tx = store.transaction().unwrap();
-        let result = LeaseService::validate_authority(
+        let err = LeaseService::validate_authority(
             &tx,
             &lease.id,
             FencingToken(999), // wrong token
@@ -362,11 +404,12 @@ mod tests {
             "att-1",
             1100,
         )
-        .unwrap();
+        .unwrap_err();
 
-        match result {
-            AuthorityValidation::Stale {
+        match err {
+            AuthorityError::StaleAuthority {
                 reason: StaleReason::TokenMismatch { expected, actual },
+                ..
             } => {
                 assert_eq!(expected, FencingToken(999));
                 assert_eq!(actual, FencingToken(1));
@@ -383,7 +426,7 @@ mod tests {
         let lease = acquire_lease(&mut store, &resource, "att-1", 100, 1000);
 
         let tx = store.transaction().unwrap();
-        let result = LeaseService::validate_authority(
+        let err = LeaseService::validate_authority(
             &tx,
             &lease.id,
             lease.fencing_token,
@@ -391,14 +434,15 @@ mod tests {
             "att-1",
             1200, // past expires_at (1000 + 100 = 1100)
         )
-        .unwrap();
+        .unwrap_err();
 
-        match result {
-            AuthorityValidation::Stale {
+        assert!(matches!(
+            err,
+            AuthorityError::StaleAuthority {
                 reason: StaleReason::LeaseExpired,
-            } => {}
-            other => panic!("expected LeaseExpired, got {:?}", other),
-        }
+                ..
+            }
+        ));
         tx.rollback().unwrap();
     }
 
@@ -415,7 +459,7 @@ mod tests {
 
         // Validate after revoke
         let tx = store.transaction().unwrap();
-        let result = LeaseService::validate_authority(
+        let err = LeaseService::validate_authority(
             &tx,
             &lease.id,
             lease.fencing_token,
@@ -423,14 +467,15 @@ mod tests {
             "att-1",
             1060,
         )
-        .unwrap();
+        .unwrap_err();
 
-        match result {
-            AuthorityValidation::Stale {
+        assert!(matches!(
+            err,
+            AuthorityError::StaleAuthority {
                 reason: StaleReason::LeaseRevoked,
-            } => {}
-            other => panic!("expected LeaseRevoked, got {:?}", other),
-        }
+                ..
+            }
+        ));
         tx.rollback().unwrap();
     }
 
@@ -504,7 +549,7 @@ mod tests {
 
         // Old token must be stale
         let tx = store.transaction().unwrap();
-        let result = LeaseService::validate_authority(
+        let err = LeaseService::validate_authority(
             &tx,
             &l1.id,
             l1.fencing_token,
@@ -512,11 +557,12 @@ mod tests {
             "att-1",
             1200,
         )
-        .unwrap();
+        .unwrap_err();
         assert!(matches!(
-            result,
-            AuthorityValidation::Stale {
-                reason: StaleReason::LeaseExpired
+            err,
+            AuthorityError::StaleAuthority {
+                reason: StaleReason::LeaseExpired,
+                ..
             }
         ));
         tx.rollback().unwrap();
@@ -542,7 +588,7 @@ mod tests {
 
         // ATT-1 tries to use old token → STALE_AUTHORITY
         let tx = store.transaction().unwrap();
-        let result = LeaseService::validate_authority(
+        let err = LeaseService::validate_authority(
             &tx,
             &l1.id,
             FencingToken(1),
@@ -550,16 +596,17 @@ mod tests {
             "att-1",
             1100,
         )
-        .unwrap();
+        .unwrap_err();
         assert!(matches!(
-            result,
-            AuthorityValidation::Stale {
-                reason: StaleReason::LeaseRevoked
+            err,
+            AuthorityError::StaleAuthority {
+                reason: StaleReason::LeaseRevoked,
+                ..
             }
         ));
 
         // Even if ATT-1 somehow presents token 1 against l2's lease, it fails
-        let result = LeaseService::validate_authority(
+        let err = LeaseService::validate_authority(
             &tx,
             &l2.id,
             FencingToken(1),
@@ -567,11 +614,12 @@ mod tests {
             "att-2",
             1100,
         )
-        .unwrap();
+        .unwrap_err();
         assert!(matches!(
-            result,
-            AuthorityValidation::Stale {
-                reason: StaleReason::TokenMismatch { .. }
+            err,
+            AuthorityError::StaleAuthority {
+                reason: StaleReason::TokenMismatch { .. },
+                ..
             }
         ));
         tx.rollback().unwrap();
@@ -606,7 +654,7 @@ mod tests {
 
             // Old token 1 must be stale
             let tx = store.transaction().unwrap();
-            let result = LeaseService::validate_authority(
+            let err = LeaseService::validate_authority(
                 &tx,
                 &expired[0],
                 FencingToken(1),
@@ -614,11 +662,12 @@ mod tests {
                 "att-1",
                 2000,
             )
-            .unwrap();
+            .unwrap_err();
             assert!(matches!(
-                result,
-                AuthorityValidation::Stale {
-                    reason: StaleReason::LeaseExpired
+                err,
+                AuthorityError::StaleAuthority {
+                    reason: StaleReason::LeaseExpired,
+                    ..
                 }
             ));
             tx.rollback().unwrap();
@@ -633,9 +682,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("concurrent_acquire.db");
 
-        // Initialize DB
+        // Initialize DB and insert prerequisite attempt rows for FK integrity
         {
-            let _store = SqliteStore::open(&db_path).unwrap();
+            let mut store = SqliteStore::open(&db_path).unwrap();
+            ensure_attempt_exists(&mut store, "att-1", "t1");
+            ensure_attempt_exists(&mut store, "att-2", "t1");
         }
 
         let resource = make_resource("t1");

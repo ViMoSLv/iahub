@@ -8,7 +8,8 @@ use rusqlite::params;
 use rusqlite::OptionalExtension;
 
 use super::error::AuthorityError;
-use super::model::{FencingToken, LeaseId, LeaseRecord, LeaseStatus, ResourceId};
+use super::model::{LeaseRecord, LeaseStatus, ResourceId};
+use crate::domain::{FencingToken, LeaseId};
 use crate::persistence::transaction::Transaction;
 
 /// Insert a new lease record. The fencing_token must already be computed
@@ -38,7 +39,7 @@ pub fn insert_lease(tx: &Transaction, lease: &LeaseRecord) -> Result<(), Authori
                 lease.resource.resource_id,
                 lease.owner_attempt_id,
                 token_hash,
-                lease.fencing_token.0 as i64,
+                lease.fencing_token.0,
                 lease.status.to_db(),
                 lease.issued_at,
                 lease.heartbeat_at,
@@ -68,29 +69,54 @@ pub fn insert_lease(tx: &Transaction, lease: &LeaseRecord) -> Result<(), Authori
     Ok(())
 }
 
-/// Get the next fencing token for a resource. Returns 1 if no prior leases
-/// exist, otherwise max(existing tokens) + 1. This MUST be called within
-/// the same transaction as insert_lease to guarantee monotonicity across
-/// concurrent acquisitions and restarts.
+/// Atomically allocate the next fencing token for a resource using the
+/// `resource_fencing_counters` high-water mark table (v0004).
 ///
-/// Uses MAX(fencing_token) over ALL statuses (including EXPIRED/REVOKED)
-/// to ensure tokens are never reused even after deletion of old records.
+/// This guarantees monotonicity even if historical leases are archived or
+/// deleted. The previous approach of using MAX(fencing_token) FROM leases
+/// was vulnerable to token reuse after deletion.
+///
+/// MUST be called within the same transaction as insert_lease.
 pub fn get_next_fencing_token(
     tx: &Transaction,
     resource: &ResourceId,
 ) -> Result<FencingToken, AuthorityError> {
-    let max_token: Option<i64> = tx
+    // Upsert pattern: INSERT OR IGNORE initializes to 0 if missing,
+    // then UPDATE increments atomically within this transaction.
+    tx.conn()
+        .execute(
+            "INSERT OR IGNORE INTO resource_fencing_counters (resource_type, resource_id, last_fencing_token, updated_at)
+             VALUES (?1, ?2, 0, 0)",
+            params![resource.resource_type, resource.resource_id],
+        )
+        .map_err(|e| AuthorityError::Persistence {
+            message: format!("get_next_fencing_token init failed: {}", e),
+        })?;
+
+    tx.conn()
+        .execute(
+            "UPDATE resource_fencing_counters
+             SET last_fencing_token = last_fencing_token + 1, updated_at = strftime('%s','now')
+             WHERE resource_type = ?1 AND resource_id = ?2",
+            params![resource.resource_type, resource.resource_id],
+        )
+        .map_err(|e| AuthorityError::Persistence {
+            message: format!("get_next_fencing_token increment failed: {}", e),
+        })?;
+
+    let next: i64 = tx
         .conn()
         .query_row(
-            "SELECT MAX(fencing_token) FROM leases WHERE resource_type = ?1 AND resource_id = ?2",
+            "SELECT last_fencing_token FROM resource_fencing_counters
+             WHERE resource_type = ?1 AND resource_id = ?2",
             params![resource.resource_type, resource.resource_id],
             |r| r.get(0),
         )
         .map_err(|e| AuthorityError::Persistence {
-            message: format!("get_next_fencing_token failed: {}", e),
+            message: format!("get_next_fencing_token read failed: {}", e),
         })?;
 
-    Ok(FencingToken(max_token.unwrap_or(0) as u64 + 1))
+    Ok(FencingToken(next))
 }
 
 /// Find the current ACTIVE lease for a resource, if any.
@@ -345,7 +371,7 @@ fn parse_lease_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<LeaseRecord> {
             resource_id: r.get(2)?,
         },
         owner_attempt_id: r.get(3)?,
-        fencing_token: FencingToken(r.get::<_, i64>(4)? as u64),
+        fencing_token: FencingToken(r.get::<_, i64>(4)?),
         status,
         issued_at: r.get(6)?,
         heartbeat_at: r.get(7)?,
@@ -366,6 +392,28 @@ mod tests {
         ResourceId::new("task", id)
     }
 
+    /// Insert prerequisite task and attempt rows so that lease FK constraints
+    /// are satisfied. v0004 restored the owner_attempt_id → task_attempts FK.
+    fn ensure_attempt_exists(store: &mut SqliteStore, attempt_id: &str, task_id: &str) {
+        let tx = store.transaction().unwrap();
+        let _ = tx.conn().execute(
+            "INSERT OR IGNORE INTO runs (id, project_id, objective, status, version, created_at, updated_at)
+             VALUES ('run-test', 'proj-test', 'test', 'DRAFT', 1, 0, 0)",
+            [],
+        );
+        let _ = tx.conn().execute(
+            "INSERT OR IGNORE INTO tasks (id, run_id, title, objective, status, priority, version, created_at, updated_at)
+             VALUES (?1, 'run-test', 'test task', 'test', 'CREATED', 0, 1, 0, 0)",
+            [task_id],
+        );
+        let _ = tx.conn().execute(
+            "INSERT OR IGNORE INTO task_attempts (id, task_id, attempt_number, status, version, created_at, updated_at)
+             VALUES (?1, ?2, 1, 'CREATED', 1, 0, 0)",
+            [attempt_id, task_id],
+        );
+        tx.commit().unwrap();
+    }
+
     #[test]
     fn next_fencing_token_starts_at_one() {
         let mut store = SqliteStore::open_in_memory().unwrap();
@@ -380,6 +428,7 @@ mod tests {
     #[test]
     fn next_fencing_token_increments_after_insert() {
         let mut store = SqliteStore::open_in_memory().unwrap();
+        ensure_attempt_exists(&mut store, "att-1", "t1");
         let tx = store.transaction().unwrap();
 
         let resource = make_resource("t1");
@@ -411,11 +460,21 @@ mod tests {
     #[test]
     fn next_fencing_token_counts_expired_and_revoked() {
         let mut store = SqliteStore::open_in_memory().unwrap();
+        ensure_attempt_exists(&mut store, "att-old", "t1");
         let tx = store.transaction().unwrap();
 
         let resource = make_resource("t1");
 
-        // Insert and revoke a lease with token 5
+        // Seed the high-water mark counter to 5 (simulating 5 prior acquisitions)
+        tx.conn()
+            .execute(
+                "INSERT INTO resource_fencing_counters (resource_type, resource_id, last_fencing_token, updated_at)
+                 VALUES (?1, ?2, 5, 0)",
+                params![resource.resource_type, resource.resource_id],
+            )
+            .unwrap();
+
+        // Insert a revoked lease with token 5 (consistent with counter)
         let lease = LeaseRecord {
             id: LeaseId("l-old".into()),
             resource: resource.clone(),
@@ -432,7 +491,7 @@ mod tests {
         };
         insert_lease(&tx, &lease).unwrap();
 
-        // Next token must be 6, not 1
+        // Next token must be 6, derived from high-water mark, not MAX(leases)
         let next = get_next_fencing_token(&tx, &resource).unwrap();
         assert_eq!(next, FencingToken(6));
 
@@ -453,6 +512,7 @@ mod tests {
     #[test]
     fn insert_and_find_active_lease() {
         let mut store = SqliteStore::open_in_memory().unwrap();
+        ensure_attempt_exists(&mut store, "att-1", "t1");
         let tx = store.transaction().unwrap();
 
         let resource = make_resource("t1");
@@ -483,6 +543,7 @@ mod tests {
     #[test]
     fn update_heartbeat_does_not_change_expires_at() {
         let mut store = SqliteStore::open_in_memory().unwrap();
+        ensure_attempt_exists(&mut store, "att-1", "t1");
         let tx = store.transaction().unwrap();
 
         let resource = make_resource("t1");
@@ -516,6 +577,7 @@ mod tests {
     #[test]
     fn revoke_lease_sets_status_and_timestamp() {
         let mut store = SqliteStore::open_in_memory().unwrap();
+        ensure_attempt_exists(&mut store, "att-1", "t1");
         let tx = store.transaction().unwrap();
 
         let resource = make_resource("t1");
@@ -552,6 +614,7 @@ mod tests {
     #[test]
     fn expire_due_leases_marks_expired() {
         let mut store = SqliteStore::open_in_memory().unwrap();
+        ensure_attempt_exists(&mut store, "att-1", "t1");
         let tx = store.transaction().unwrap();
 
         let resource = make_resource("t1");

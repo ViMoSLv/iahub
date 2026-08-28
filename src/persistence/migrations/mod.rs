@@ -14,6 +14,7 @@ use super::transaction::Transaction;
 mod v0001_initial;
 mod v0002_leases_operations;
 mod v0003_lease_fk_relaxation;
+mod v0004_fencing_highwater_and_constraints;
 
 /// A single named migration step.
 struct Migration {
@@ -38,6 +39,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 3,
         name: "v0003_lease_fk_relaxation",
         apply: v0003_lease_fk_relaxation::apply,
+    },
+    Migration {
+        version: 4,
+        name: "v0004_fencing_highwater_and_constraints",
+        apply: v0004_fencing_highwater_and_constraints::apply,
     },
 ];
 

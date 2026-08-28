@@ -13,7 +13,7 @@ use super::error::PersistenceError;
 
 /// The schema version this binary understands and produces.
 /// Increment when adding migrations.
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 /// Name of the internal table tracking schema metadata.
 pub const SCHEMA_VERSION_TABLE: &str = "mega_brain_schema";

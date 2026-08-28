@@ -4,7 +4,8 @@
 //! no panics, no silent defaults. STALE_AUTHORITY is the canonical error
 //! for any attempt to use a superseded fencing token.
 
-use crate::authority::model::{FencingToken, LeaseId, StaleReason};
+use crate::authority::model::StaleReason;
+use crate::domain::{FencingToken, LeaseId};
 use std::fmt;
 
 /// Errors returned by LeaseService operations.
@@ -103,7 +104,6 @@ impl AuthorityError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authority::model::LeaseId;
 
     #[test]
     fn stale_authority_is_stale() {
