@@ -93,18 +93,10 @@ pub fn get_next_fencing_token(
             message: format!("get_next_fencing_token init failed: {}", e),
         })?;
 
-    tx.conn()
-        .execute(
-            "UPDATE resource_fencing_counters
-             SET last_fencing_token = last_fencing_token + 1, updated_at = strftime('%s','now')
-             WHERE resource_type = ?1 AND resource_id = ?2",
-            params![resource.resource_type, resource.resource_id],
-        )
-        .map_err(|e| AuthorityError::Persistence {
-            message: format!("get_next_fencing_token increment failed: {}", e),
-        })?;
-
-    let next: i64 = tx
+    // Read current value first to check for overflow before incrementing.
+    // SQLite INTEGER is i64; we must fail closed at i64::MAX to prevent
+    // wraparound or silent corruption of the monotonic guarantee.
+    let current: i64 = tx
         .conn()
         .query_row(
             "SELECT last_fencing_token FROM resource_fencing_counters
@@ -116,7 +108,28 @@ pub fn get_next_fencing_token(
             message: format!("get_next_fencing_token read failed: {}", e),
         })?;
 
-    Ok(FencingToken(next))
+    if current == i64::MAX {
+        return Err(AuthorityError::InvalidRequest {
+            message: format!(
+                "fencing token overflow for {}/{}: current={} is at i64::MAX, \
+                 no further tokens can be allocated",
+                resource.resource_type, resource.resource_id, current
+            ),
+        });
+    }
+
+    tx.conn()
+        .execute(
+            "UPDATE resource_fencing_counters
+             SET last_fencing_token = last_fencing_token + 1, updated_at = strftime('%s','now')
+             WHERE resource_type = ?1 AND resource_id = ?2",
+            params![resource.resource_type, resource.resource_id],
+        )
+        .map_err(|e| AuthorityError::Persistence {
+            message: format!("get_next_fencing_token increment failed: {}", e),
+        })?;
+
+    Ok(FencingToken(current + 1))
 }
 
 /// Find the current ACTIVE lease for a resource, if any.
@@ -496,6 +509,44 @@ mod tests {
         assert_eq!(next, FencingToken(6));
 
         tx.commit().unwrap();
+    }
+
+    #[test]
+    fn fencing_token_overflow_at_i64_max_is_rejected() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let tx = store.transaction().unwrap();
+        let resource = make_resource("t-overflow");
+
+        // Seed counter at i64::MAX to simulate exhaustion
+        tx.conn()
+            .execute(
+                "INSERT INTO resource_fencing_counters (resource_type, resource_id, last_fencing_token, updated_at)
+                 VALUES (?1, ?2, ?3, 0)",
+                params![resource.resource_type, resource.resource_id, i64::MAX],
+            )
+            .unwrap();
+
+        // Next allocation must fail closed, not wrap or corrupt
+        let err = get_next_fencing_token(&tx, &resource).unwrap_err();
+        assert!(
+            matches!(err, AuthorityError::InvalidRequest { ref message } if message.contains("overflow")),
+            "expected overflow error, got {:?}",
+            err
+        );
+
+        // Counter must remain unchanged after failed allocation
+        let current: i64 = tx
+            .conn()
+            .query_row(
+                "SELECT last_fencing_token FROM resource_fencing_counters
+                 WHERE resource_type = ?1 AND resource_id = ?2",
+                params![resource.resource_type, resource.resource_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(current, i64::MAX, "counter must not advance past i64::MAX");
+
+        tx.rollback().unwrap();
     }
 
     #[test]

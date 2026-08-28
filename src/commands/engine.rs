@@ -115,13 +115,24 @@ impl<'a> CommandEngine<'a> {
         // This checks expiry, revocation, fencing token validity, and ownership
         // against the current DB state. Handler MUST NOT execute if this fails.
         if let Some(ref auth) = resolved_authority {
+            let now: i64 =
+                envelope
+                    .issued_at
+                    .0
+                    .parse()
+                    .map_err(|e| CommandError::InvalidCommand {
+                        detail: format!(
+                            "invalid issued_at timestamp '{}' for authority validation: {}",
+                            envelope.issued_at.0, e
+                        ),
+                    })?;
             LeaseService::validate_authority(
                 &tx,
                 &auth.lease_id,
                 auth.fencing_token,
                 &auth.resource,
                 &auth.attempt_id.0,
-                envelope.issued_at.0.parse::<i64>().unwrap_or(0),
+                now,
             )
             .map_err(|e| match e {
                 crate::authority::AuthorityError::StaleAuthority { reason, .. } => {
@@ -176,7 +187,11 @@ impl<'a> CommandEngine<'a> {
             Err(err) => {
                 // Roll back handler mutations; command record survives.
                 sp.rollback()?;
-                let error_json = serde_json::to_string(&err.to_string()).unwrap_or_default();
+                let error_json = serde_json::to_string(&err.to_string()).map_err(|e| {
+                    CommandError::InvalidCommand {
+                        detail: format!("failed to serialize command error: {}", e),
+                    }
+                })?;
                 store::complete_failure(
                     &tx,
                     &envelope.command_id,
