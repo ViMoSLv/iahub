@@ -12,6 +12,7 @@ use super::schema_version::{self, CURRENT_SCHEMA_VERSION};
 use super::transaction::Transaction;
 
 mod v0001_initial;
+mod v0002_leases_operations;
 
 /// A single named migration step.
 struct Migration {
@@ -21,11 +22,18 @@ struct Migration {
 }
 
 /// All migrations in strict ascending order. Never reorder or remove entries.
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "v0001_initial",
-    apply: v0001_initial::apply,
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "v0001_initial",
+        apply: v0001_initial::apply,
+    },
+    Migration {
+        version: 2,
+        name: "v0002_leases_operations",
+        apply: v0002_leases_operations::apply,
+    },
+];
 
 /// Run all pending migrations up to `CURRENT_SCHEMA_VERSION`.
 /// Safe to call on every open; already-applied versions are skipped.

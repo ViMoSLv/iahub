@@ -27,6 +27,13 @@ pub enum CommandError {
     InvalidTransition { detail: String },
     /// A precondition for the command was not satisfied.
     PreconditionFailed { detail: String },
+    /// Stale fencing token: authority has been superseded by a newer lease.
+    StaleAuthority {
+        resource_type: &'static str,
+        resource_id: String,
+        presented_token: crate::domain::FencingToken,
+        current_token: crate::domain::FencingToken,
+    },
     /// Persistence layer error translated to command context.
     Persistence(PersistenceError),
 }
@@ -63,6 +70,18 @@ impl fmt::Display for CommandError {
             }
             Self::PreconditionFailed { detail } => {
                 write!(f, "precondition failed: {}", detail)
+            }
+            Self::StaleAuthority {
+                resource_type,
+                resource_id,
+                presented_token,
+                current_token,
+            } => {
+                write!(
+                    f,
+                    "stale authority on {} {}: presented fencing token {} but current is {}",
+                    resource_type, resource_id, presented_token.0, current_token.0
+                )
             }
             Self::Persistence(e) => {
                 write!(f, "persistence error: {}", e)

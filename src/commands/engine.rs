@@ -122,16 +122,23 @@ impl<'a> CommandEngine<'a> {
 mod tests {
     use super::*;
     use crate::commands::handlers::{handle_create_project, CreateProjectPayload};
-    use crate::commands::types::CorrelationId;
+    use crate::commands::types::{Actor, ActorType, CorrelationId};
     use crate::domain::{CommandId, ProjectId};
     use crate::persistence::repositories::project::ProjectRepository;
 
     fn make_envelope(payload: CreateProjectPayload) -> CommandEnvelope<CreateProjectPayload> {
         CommandEnvelope {
             command_id: CommandId::from(format!("cmd-{}", uuid::Uuid::new_v4())),
+            actor: Actor {
+                r#type: ActorType::System,
+                id: "test".to_string(),
+            },
             correlation_id: CorrelationId::from("test-corr"),
             causation_id: None,
             expected_version: None,
+            attempt_id: None,
+            lease_id: None,
+            fencing_token: None,
             issued_at: Timestamp("1000".to_string()),
             payload,
         }
@@ -208,9 +215,16 @@ mod tests {
         let cmd_id = CommandId::from("cmd-conflict");
         let envelope1 = CommandEnvelope {
             command_id: cmd_id.clone(),
+            actor: Actor {
+                r#type: ActorType::System,
+                id: "test".to_string(),
+            },
             correlation_id: CorrelationId::from("c1"),
             causation_id: None,
             expected_version: None,
+            attempt_id: None,
+            lease_id: None,
+            fencing_token: None,
             issued_at: Timestamp("1000".to_string()),
             payload: CreateProjectPayload {
                 project_id: ProjectId::from("proj-a"),
@@ -230,9 +244,16 @@ mod tests {
         // Same command_id, different payload
         let envelope2 = CommandEnvelope {
             command_id: cmd_id,
+            actor: Actor {
+                r#type: ActorType::System,
+                id: "test".to_string(),
+            },
             correlation_id: CorrelationId::from("c2"),
             causation_id: None,
             expected_version: None,
+            attempt_id: None,
+            lease_id: None,
+            fencing_token: None,
             issued_at: Timestamp("2000".to_string()),
             payload: CreateProjectPayload {
                 project_id: ProjectId::from("proj-b"),

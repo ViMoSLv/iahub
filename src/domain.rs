@@ -13,11 +13,11 @@ pub mod delegation;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-// Re-export delegation types for ergonomic access via `crate::domain::*`
+// Re-export delegation/dispatch types for ergonomic access via `crate::domain::*`
 pub use delegation::{
-    AgentCapability, AuthorityScope, CompiledPrompt, CompiledPromptId, ContextSnapshot,
-    ContextSnapshotId, Delegation, DelegationId, DelegationStatus, StopCondition,
-    VerificationEvidence, WorkerReport,
+    AuthorityScope, CapabilityId, CompiledPrompt, CompiledPromptId, ContextSnapshot,
+    ContextSnapshotId, DispatchSpec, StopCondition, VerificationEvidence, VerificationOutcome,
+    WorkerReport,
 };
 
 // ---------------------------------------------------------------------------

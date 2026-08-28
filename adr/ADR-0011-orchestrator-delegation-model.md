@@ -1,98 +1,135 @@
 # ADR-0011: Orchestrator Delegation Model
 
 ## Status
-ACCEPTED
+
+**AMENDED / ACCEPTED AS AMENDED** (2026-08-28)
+
+Originally accepted as part of Topic 04 scaffold. Amended after architectural
+audit revealed dual-lifecycle conflict between `Delegation` aggregate and
+existing `Attempt` entity.
 
 ## Context
-Mega Brain V0 must coordinate multiple coding agents without treating prompts as coordination state or allowing workers to self-certify completion. Early architectural analysis revealed that conflating task semantics with prompt text, or trusting worker self-reports, leads to non-deterministic failures, audit gaps, and inability to replay or re-delegate work when models, templates, or strategies change.
 
-Key constraints:
-- The Hub is the source of truth for coordination state (INV-009).
-- Reported state is not observed reality (INV-005).
-- Workers cannot certify their own success (INV-006).
-- Task identity survives retries, reviews, and agent replacement (INV-015).
-- Architectural decisions belong to the Orchestrator/Hub, not execution workers.
-- Future versions must support model swapping, prompt template evolution, and capability-based agent selection without altering task semantics.
+The Mega Brain orchestrator must dispatch work to external agents. This requires:
+
+1. Selecting an agent based on capabilities, not hardcoded provider/model names
+2. Providing immutable, versioned context so decisions are auditable
+3. Compiling prompts as artifacts, not inline coordination state
+4. Defining explicit authority boundaries workers cannot exceed
+5. Separating worker self-reports from independent verification evidence
+6. Supporting stop conditions that force escalation over improvisation
+
+The initial implementation introduced a `Delegation` aggregate with its own
+identity (`DelegationId`) and lifecycle (`DelegationStatus`). However, the
+architecture already possesses `Attempt` as the identity of a concrete execution
+trial. Having both created two entities competing for the same semantic ground:
+which agent executes, retry semantics, report/verification, and terminal state.
 
 ## Decision
-We separate the orchestration pipeline into five distinct, durably-stored concepts:
 
-### 1. Task ≠ Prompt
-Tasks carry structured semantic information (objective, scope, constraints, invariants, dependencies, acceptance criteria, required evidence). Prompts are **compiled artifacts** produced from tasks + context snapshots by a dedicated PromptCompiler component. Changing prompt templates or switching models never alters task semantics.
+### Amended Architecture
 
-### 2. Delegation Entity
-A Task may be delegated multiple times (retries, reviews, recovery). Each delegation records:
-- `task_id` — which task
-- `agent_id` — which agent (selected by capability, not hardcoded name)
-- `authority_scope` — explicit CAN/CANNOT boundaries
-- `stop_conditions` — conditions requiring escalation
-- `context_snapshot_id` — immutable reference to versioned context
-- `compiled_prompt_id` — reference to the prompt artifact sent to the agent
-- `worker_report` — what the agent claimed (never trusted as truth)
-- `verification_evidence` — independent observational evidence
+**`Attempt` remains the sole execution identity.** There is no independent
+`Delegation` aggregate. Instead, dispatch-related data is modeled as immutable
+value objects attached to an Attempt:
 
-### 3. Context Snapshot (Versioned)
-Every delegation references an immutable snapshot capturing project revision, architecture revision, invariant revision, ADR revision, and schema version at creation time. This enables future audit: "with what context did this agent make this decision?"
+```
+Task
+  └── Attempt (execution identity)
+        ├── DispatchSpec (immutable value object)
+        │     ├── attempt_id
+        │     ├── task_id
+        │     ├── agent_id
+        │     ├── authority_scope
+        │     ├── stop_conditions
+        │     ├── context_snapshot_id
+        │     └── compiled_prompt_id
+        ├── ContextSnapshot (versioned, immutable)
+        ├── CompiledPrompt (regenerable artifact)
+        ├── WorkerReport (claimed state — NOT trusted)
+        └── VerificationEvidence (independent observation)
+```
 
-### 4. Worker Report vs Verification Evidence
-Worker reports (`reported_status`, `summary`, `claims`) are stored separately from verification evidence (`observed_status`, `checks_passed`, `violations`). Only verified evidence can authorize transitions to DONE.
+### Key Type Changes
 
-### 5. Capability-Based Agent Selection
-Agents declare capabilities (code-generation, code-review, architecture-review, research, testing, security-review, etc.). The Orchestrator matches task requirements against capabilities. Agent model names are implementation details, not selection criteria.
+| Before | After | Rationale |
+|--------|-------|-----------|
+| `DelegationId` (newtype) | Removed | No independent identity needed |
+| `DelegationStatus` (state machine) | Removed | Duplicate lifecycle; Attempt owns state |
+| `AgentCapability` (enum) | `CapabilityId(String)` | Data-driven; new capabilities without recompilation |
+| `AuthorityScope.can_merge` | Removed | Workers NEVER merge (INV-013) |
+| `VerificationEvidence.observed_status: String` | `VerificationOutcome` enum | Typed; Unknown is first-class |
 
-### 6. Stop Conditions
-Every delegation carries explicit stop conditions. When encountered, the worker MUST stop and escalate (`STOPPED_NEEDS_DECISION`) rather than improvise architectural decisions.
+### Why Not a Second Lifecycle?
 
-### 7. Authority Boundaries
-Each delegation has an explicit `AuthorityScope` defining permitted paths, denied paths, and boolean flags for file creation/deletion, command execution, architecture modification, and merging. Violations are failures.
+`Task → Attempt` already represents a concrete execution trial with full
+lifecycle management (creation, transitions, retry, terminal states). Adding
+`Delegation` as a parallel aggregate would introduce:
+
+- **Dual authority**: Which entity owns the "current state" of execution?
+- **State drift**: Delegation says EXECUTING but Attempt says FAILED
+- **Identity confusion**: Retry creates Attempt-2 + Delegation-9 — which is canonical?
+- **Invariant complexity**: Every invariant touching execution must now reason about two entities
+
+A value object (`DispatchSpec`) captures all dispatch intent without these costs.
+It is created once per Attempt, never mutated, and carries no lifecycle of its own.
+
+### Preserved Design Principles
+
+These principles from the original ADR remain valid and are now enforced through
+the amended types:
+
+- **Prompts are artifacts** (INV-037): `CompiledPrompt` is a regenerable artifact
+  with content hash, compiler version, and snapshot reference
+- **Versioned context** (INV-038): `ContextSnapshot` captures project/architecture/
+  invariant/ADR revisions at dispatch time
+- **Capability-based selection** (INV-039): `CapabilityId` is data-driven
+- **Authority boundaries** (INV-040): `AuthorityScope` explicitly lists what
+  workers can/cannot do; out-of-authority triggers stop condition
+- **Verified completion** (INV-041): Only `VerificationEvidence` with typed
+  `VerificationOutcome` can authorize certified completion
+- **Worker ≠ Verifier**: `WorkerReport` and `VerificationEvidence` are distinct
+  types that cannot be accidentally interchanged
 
 ## Consequences
 
 ### Positive
-- Prompts are regenerable artifacts; changing templates or models does not corrupt task semantics.
-- Every delegation is fully auditable via context snapshot reference.
-- Worker self-certification is structurally impossible (separate report vs evidence types).
-- Agent selection is decoupled from specific model names.
-- Out-of-authority actions are caught by stop conditions before damage occurs.
-- Task retry/review/recovery creates new delegations without mutating original task spec.
-- Future PromptCompiler implementations can evolve independently of domain model.
+
+- Single source of truth for execution state (`Attempt`)
+- No dual-lifecycle synchronization bugs possible
+- New agent capabilities deployable via manifests, not Core recompilation
+- Authority scope cannot grant impossible permissions (no `can_merge`)
+- Verification outcomes are typed, not free-text strings
+- All dispatch data is immutable and auditable
 
 ### Negative
-- Additional entity types increase schema complexity (future migration v0002+).
-- Context snapshot creation adds overhead per delegation.
-- Capability registry requires maintenance as agents evolve.
-- PromptCompiler becomes a critical component requiring its own testing strategy.
-- Developers must think in five concepts instead of "send prompt to agent".
 
-### Risks & Mitigations
-| Risk | Mitigation |
-|------|------------|
-| Context snapshot bloat | Snapshots are content-addressed; identical contexts share storage |
-| Capability list becomes stale | Periodic health checks validate declared capabilities against observed behavior |
-| PromptCompiler produces bad prompts | Compiler version tracked; rollback to previous version possible |
-| Stop conditions too restrictive cause excessive escalation | Configurable per-task; human override path for edge cases |
-| Authority scope too coarse for complex tasks | Hierarchical path patterns; future refinement with glob/regex support |
-| Delegation proliferation makes audit difficult | Index by task_id + created_at; retention policy for old delegations |
+- Code referencing `DelegationId` or `DelegationStatus` must be updated
+- Callers that expected delegation lifecycle events must use Attempt events instead
+- Migration of any persisted delegation records to Attempt-attached value objects
 
-## New Invariants
-This ADR introduces five new invariants (INV-037 through INV-041):
-- INV-037: Prompts are compiled artifacts, not coordination state
-- INV-038: Every delegation must reference a versioned context snapshot
-- INV-039: Agent selection is capability-based, not hardcoded
-- INV-040: Workers encountering out-of-authority decisions must stop and escalate
-- INV-041: Only verified evidence may transition work to certified DONE
+### Neutral
 
-## Implementation Phasing
-Domain types are created immediately (Topic 04 hardening). Schema tables, runtime logic, and PromptCompiler implementation are deferred to appropriate future topics. No existing behavior is altered.
+- `DispatchSpec` is always created alongside an Attempt; they share fate
+- Context snapshots and compiled prompts remain domain-only until Scheduler topic
 
-## Related
-- INV-005: Reported not observed
-- INV-006: No self-certification
-- INV-013: No agent merge
-- INV-015: Task survives lifecycle
-- INV-016: Done requires evidence
-- ADR-0005: Observed vs Reported State
-- ADR-0006: Independent Verification and Review
-- [ARCHITECTURE.md](../ARCHITECTURE.md)
-- [TOPICOS/07-PROVIDER-ADAPTERS-E-SESSION-HOLDER.md](../TOPICOS/07-PROVIDER-ADAPTERS-E-SESSION-HOLDER.md)
-- [TOPICOS/09-PLANNER-E-SCHEDULER.md](../TOPICOS/09-PLANNER-E-SCHEDULER.md)
+## Risks
+
+- **Risk**: Callers may still think in terms of "delegations" rather than "dispatch specs"
+  - **Mitigation**: Documentation, type system enforcement, removed old types entirely
+- **Risk**: Data-driven `CapabilityId` loses compile-time exhaustiveness checking
+  - **Mitigation**: Known capabilities exposed as constants; runtime validation at boundaries
+- **Risk**: Removing `DelegationStatus` means losing granular dispatch-phase tracking
+  - **Mitigation**: Attempt state machine covers execution phases; dispatch is instantaneous
+
+## References
+
+- INV-005: Reported state ≠ observed reality
+- INV-006: Workers cannot certify their own success
+- INV-007: Unknown remains unknown
+- INV-013: Workers never merge target branch
+- INV-037: Prompts are compiled artifacts
+- INV-038: Dispatch requires versioned context snapshot
+- INV-039: Capability-based agent selection
+- INV-040: Out-of-authority must stop and escalate
+- INV-041: Verified evidence for certified completion

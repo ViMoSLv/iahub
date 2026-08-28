@@ -5,7 +5,24 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{CommandId, EntityVersion, Timestamp};
+use crate::domain::{AttemptId, CommandId, EntityVersion, FencingToken, LeaseId, Timestamp};
+
+/// The type of actor issuing a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ActorType {
+    Agent,
+    User,
+    System,
+    Adapter,
+}
+
+/// Identity of the actor issuing a command.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Actor {
+    pub r#type: ActorType,
+    pub id: String,
+}
 
 /// Correlation ID for tracing related commands/events across the system.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -38,19 +55,27 @@ pub enum CommandStatus {
 
 /// Typed envelope wrapping every command entering the engine.
 ///
-/// The envelope carries identity, correlation, versioning, and payload
+/// The envelope carries identity, correlation, versioning, authority, and payload
 /// separately so that idempotency checks can operate on the hash without
-/// deserializing the payload.
+/// deserializing the payload. Matches the canonical envelope in Topic 04 §8.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandEnvelope<C> {
     /// Unique command identifier for idempotency.
     pub command_id: CommandId,
+    /// Identity of the actor issuing this command.
+    pub actor: Actor,
     /// Correlation ID linking related commands and events.
     pub correlation_id: CorrelationId,
     /// Optional causation: the command or event that triggered this one.
     pub causation_id: Option<CommandId>,
     /// Expected entity version for optimistic concurrency (if applicable).
     pub expected_version: Option<EntityVersion>,
+    /// Attempt ID required for mutating attempt commands.
+    pub attempt_id: Option<AttemptId>,
+    /// Lease ID proving current authority over the attempt/resource.
+    pub lease_id: Option<LeaseId>,
+    /// Fencing token preventing stale authority reuse.
+    pub fencing_token: Option<FencingToken>,
     /// When the command was issued (opaque timestamp).
     pub issued_at: Timestamp,
     /// The typed command payload.
