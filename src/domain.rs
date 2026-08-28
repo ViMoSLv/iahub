@@ -338,6 +338,23 @@ pub fn validate_task_transition(
 // Attempt Status + Transitions (Section 5.3)
 // ---------------------------------------------------------------------------
 
+/// Evidence of process/session termination observed by the system.
+/// Worker self-report alone is NOT sufficient — this must come from
+/// independent observation (process exit, session disconnect, etc.).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TerminationEvidence {
+    /// Process exited with known code.
+    ProcessExited { exit_code: i32 },
+    /// Session/connection lost and confirmed dead.
+    SessionDisconnected { reason: String },
+    /// Provider confirmed termination via adapter.
+    ProviderConfirmed { detail: String },
+}
+
+/// Cancellation state machine per Appendix E.
+/// Distinguishes request from observed termination.
+/// ACTIVE → CANCELLED direct transition is FORBIDDEN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[non_exhaustive]
@@ -350,7 +367,14 @@ pub enum AttemptStatus {
     Blocked,
     Stale,
     Failed,
+    /// Cancellation has been requested but not yet confirmed.
+    /// Lease/fencing authority MUST be revoked before entering this state.
+    CancelRequested,
+    /// Cancellation confirmed via observed termination evidence.
     Cancelled,
+    /// Cancellation requested but termination could not be confirmed.
+    /// Preserves uncertainty for later reconcile.
+    CancelIndeterminate,
     Lost,
 }
 
@@ -366,7 +390,15 @@ impl AttemptStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Failed | Self::Cancelled | Self::Lost | Self::Stale
+            Self::Failed | Self::Cancelled | Self::CancelIndeterminate | Self::Lost | Self::Stale
+        )
+    }
+
+    /// Returns true if this status represents a cancellation-in-progress state.
+    pub fn is_cancelling(self) -> bool {
+        matches!(
+            self,
+            Self::CancelRequested | Self::Cancelled | Self::CancelIndeterminate
         )
     }
 }
@@ -403,8 +435,9 @@ pub fn validate_attempt_transition(
         return Err(AttemptTransitionError::TerminalStateCannotTransition { from });
     }
 
-    // Stale is terminal per is_terminal(); STALE→LOST happens via reconcile
-    // reading the lease table, not via a domain transition function.
+    // Appendix E: Cancellation requires CancelRequested first.
+    // Direct Active → Cancelled is FORBIDDEN.
+    // CancelIndeterminate preserves uncertainty when evidence is inconclusive.
     let valid = matches!(
         (from, to),
         (AttemptStatus::Created, AttemptStatus::Leased)
@@ -414,9 +447,15 @@ pub fn validate_attempt_transition(
             | (AttemptStatus::Active, AttemptStatus::Blocked)
             | (AttemptStatus::Active, AttemptStatus::Stale)
             | (AttemptStatus::Active, AttemptStatus::Failed)
-            | (AttemptStatus::Active, AttemptStatus::Cancelled)
+            | (AttemptStatus::Active, AttemptStatus::CancelRequested)
             | (AttemptStatus::Active, AttemptStatus::Lost)
             | (AttemptStatus::Blocked, AttemptStatus::Active)
+            | (AttemptStatus::CancelRequested, AttemptStatus::Cancelled)
+            | (
+                AttemptStatus::CancelRequested,
+                AttemptStatus::CancelIndeterminate
+            )
+            | (AttemptStatus::CancelRequested, AttemptStatus::Active)
     );
 
     if valid {
@@ -929,6 +968,79 @@ mod tests {
         assert!(
             validate_attempt_transition(AttemptStatus::Failed, AttemptStatus::Created).is_err()
         );
+    }
+
+    /// Appendix E (INV-033): Direct ACTIVE → CANCELLED is forbidden.
+    /// Cancellation must go through CANCEL_REQUESTED first.
+    #[test]
+    fn inv_033_direct_active_to_cancelled_is_forbidden() {
+        let result = validate_attempt_transition(AttemptStatus::Active, AttemptStatus::Cancelled);
+        assert!(
+            result.is_err(),
+            "ACTIVE → CANCELLED direct transition must be rejected per Appendix E"
+        );
+    }
+
+    /// Appendix E: Valid two-phase cancellation path.
+    /// ACTIVE → CANCEL_REQUESTED → CANCELLED (with evidence) or CANCEL_INDETERMINATE.
+    #[test]
+    fn inv_033_cancellation_requires_two_phase_path() {
+        // Phase 1: Request cancellation
+        assert!(
+            validate_attempt_transition(AttemptStatus::Active, AttemptStatus::CancelRequested)
+                .is_ok(),
+            "ACTIVE → CANCEL_REQUESTED must be valid"
+        );
+
+        // Phase 2a: Confirmed termination → CANCELLED
+        assert!(
+            validate_attempt_transition(AttemptStatus::CancelRequested, AttemptStatus::Cancelled)
+                .is_ok(),
+            "CANCEL_REQUESTED → CANCELLED must be valid when evidence confirms termination"
+        );
+
+        // Phase 2b: Inconclusive evidence → CANCEL_INDETERMINATE
+        assert!(
+            validate_attempt_transition(
+                AttemptStatus::CancelRequested,
+                AttemptStatus::CancelIndeterminate
+            )
+            .is_ok(),
+            "CANCEL_REQUESTED → CANCEL_INDETERMINATE must be valid for inconclusive evidence"
+        );
+
+        // Recovery: Cancel requested but agent responds → back to ACTIVE
+        assert!(
+            validate_attempt_transition(AttemptStatus::CancelRequested, AttemptStatus::Active)
+                .is_ok(),
+            "CANCEL_REQUESTED → ACTIVE must be valid if agent proves liveness"
+        );
+    }
+
+    /// CANCEL_INDETERMINATE is terminal — cannot transition further without reconcile.
+    #[test]
+    fn cancel_indeterminate_is_terminal() {
+        assert!(
+            AttemptStatus::CancelIndeterminate.is_terminal(),
+            "CANCEL_INDETERMINATE must be terminal per Appendix E"
+        );
+        assert!(
+            validate_attempt_transition(AttemptStatus::CancelIndeterminate, AttemptStatus::Active)
+                .is_err(),
+            "CANCEL_INDETERMINATE cannot transition back to ACTIVE without external reconcile"
+        );
+    }
+
+    /// TerminationEvidence serializes correctly for persistence.
+    #[test]
+    fn termination_evidence_serializes_correctly() {
+        let evidence = TerminationEvidence::ProcessExited { exit_code: 1 };
+        let json = serde_json::to_string(&evidence).unwrap();
+        assert!(json.contains("PROCESS_EXITED"));
+        assert!(json.contains("1"));
+
+        let deserialized: TerminationEvidence = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, evidence);
     }
 
     #[test]
