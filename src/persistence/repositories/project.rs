@@ -31,8 +31,23 @@ impl ProjectRepository {
     pub fn insert(tx: &Transaction, row: &ProjectRow) -> Result<(), PersistenceError> {
         // Timestamps are stored as INTEGER (unix millis) in SQLite.
         // Parse the opaque Timestamp string to i64 for persistence.
-        let created_at: i64 = row.created_at.0.parse().unwrap_or(0);
-        let updated_at: i64 = row.updated_at.0.parse().unwrap_or(0);
+        // Fail closed on invalid timestamps — never silently use epoch zero.
+        let created_at: i64 =
+            row.created_at
+                .0
+                .parse()
+                .map_err(|e| PersistenceError::Serialization {
+                    context: "projects.created_at",
+                    detail: format!("invalid timestamp '{}': {}", row.created_at.0, e),
+                })?;
+        let updated_at: i64 =
+            row.updated_at
+                .0
+                .parse()
+                .map_err(|e| PersistenceError::Serialization {
+                    context: "projects.updated_at",
+                    detail: format!("invalid timestamp '{}': {}", row.updated_at.0, e),
+                })?;
 
         tx.conn()
             .execute(
@@ -105,7 +120,15 @@ impl ProjectRepository {
         expected_version: EntityVersion,
     ) -> Result<(), PersistenceError> {
         // Timestamps are stored as INTEGER (unix millis) in SQLite.
-        let updated_at: i64 = row.updated_at.0.parse().unwrap_or(0);
+        // Fail closed on invalid timestamps — never silently use epoch zero.
+        let updated_at: i64 =
+            row.updated_at
+                .0
+                .parse()
+                .map_err(|e| PersistenceError::Serialization {
+                    context: "projects.updated_at",
+                    detail: format!("invalid timestamp '{}': {}", row.updated_at.0, e),
+                })?;
 
         let affected = tx
             .conn()
