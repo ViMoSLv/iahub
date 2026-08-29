@@ -69,6 +69,31 @@ pub fn insert_lease(tx: &Transaction, lease: &LeaseRecord) -> Result<(), Authori
     Ok(())
 }
 
+/// Read the current fencing token for a resource WITHOUT mutating state.
+///
+/// Returns FencingToken(0) if no counter exists yet (no prior allocations).
+/// Used by validate_authority() to check supersession without consuming tokens.
+/// This function is READ-ONLY and safe to call repeatedly.
+pub fn get_current_fencing_token(
+    tx: &Transaction,
+    resource: &ResourceId,
+) -> Result<FencingToken, AuthorityError> {
+    let current: Option<i64> = tx
+        .conn()
+        .query_row(
+            "SELECT last_fencing_token FROM resource_fencing_counters
+             WHERE resource_type = ?1 AND resource_id = ?2",
+            params![resource.resource_type, resource.resource_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| AuthorityError::Persistence {
+            message: format!("get_current_fencing_token failed: {}", e),
+        })?;
+
+    Ok(FencingToken(current.unwrap_or(0)))
+}
+
 /// Atomically allocate the next fencing token for a resource using the
 /// `resource_fencing_counters` high-water mark table (v0004).
 ///
@@ -76,8 +101,12 @@ pub fn insert_lease(tx: &Transaction, lease: &LeaseRecord) -> Result<(), Authori
 /// deleted. The previous approach of using MAX(fencing_token) FROM leases
 /// was vulnerable to token reuse after deletion.
 ///
+/// MUTATES the high-water mark. MUST only be called when creating or
+/// superseding authority (acquire, expire+reacquire). NEVER call from
+/// validation paths — use get_current_fencing_token() instead.
+///
 /// MUST be called within the same transaction as insert_lease.
-pub fn get_next_fencing_token(
+pub fn allocate_next_fencing_token(
     tx: &Transaction,
     resource: &ResourceId,
 ) -> Result<FencingToken, AuthorityError> {
@@ -90,7 +119,7 @@ pub fn get_next_fencing_token(
             params![resource.resource_type, resource.resource_id],
         )
         .map_err(|e| AuthorityError::Persistence {
-            message: format!("get_next_fencing_token init failed: {}", e),
+            message: format!("allocate_next_fencing_token init failed: {}", e),
         })?;
 
     // Read current value first to check for overflow before incrementing.
@@ -105,7 +134,7 @@ pub fn get_next_fencing_token(
             |r| r.get(0),
         )
         .map_err(|e| AuthorityError::Persistence {
-            message: format!("get_next_fencing_token read failed: {}", e),
+            message: format!("allocate_next_fencing_token read failed: {}", e),
         })?;
 
     if current == i64::MAX {
@@ -126,7 +155,7 @@ pub fn get_next_fencing_token(
             params![resource.resource_type, resource.resource_id],
         )
         .map_err(|e| AuthorityError::Persistence {
-            message: format!("get_next_fencing_token increment failed: {}", e),
+            message: format!("allocate_next_fencing_token increment failed: {}", e),
         })?;
 
     Ok(FencingToken(current + 1))
@@ -329,6 +358,50 @@ pub fn revoke_lease(
     }
 }
 
+/// Expire a single ACTIVE lease by ID within an existing transaction.
+/// Used during acquisition (Blocker #9) when an existing ACTIVE lease is
+/// temporally expired but hasn't been swept yet. Uses optimistic concurrency.
+pub fn expire_single_lease(
+    tx: &Transaction,
+    lease_id: &LeaseId,
+    now: i64,
+    expected_version: u64,
+) -> Result<u64, AuthorityError> {
+    let new_version = expected_version + 1;
+    let affected = tx
+        .conn()
+        .execute(
+            "UPDATE leases SET status = 'EXPIRED', updated_at = ?1, version = ?2
+             WHERE id = ?3 AND version = ?4 AND status = 'ACTIVE'",
+            params![now, new_version as i64, lease_id.0, expected_version as i64],
+        )
+        .map_err(|e| AuthorityError::Persistence {
+            message: format!("expire_single_lease failed: {}", e),
+        })?;
+
+    if affected == 0 {
+        let current = find_by_id(tx, lease_id)?;
+        match current {
+            Some(lease) if lease.version != expected_version => {
+                Err(AuthorityError::VersionConflict {
+                    lease_id: lease_id.clone(),
+                    expected_version,
+                    actual_version: lease.version,
+                })
+            }
+            Some(_) => Err(AuthorityError::StaleAuthority {
+                lease_id: lease_id.clone(),
+                reason: super::model::StaleReason::LeaseNotActive,
+            }),
+            None => Err(AuthorityError::LeaseNotFound {
+                lease_id: lease_id.clone(),
+            }),
+        }
+    } else {
+        Ok(new_version)
+    }
+}
+
 /// Expire all ACTIVE leases whose expires_at <= now.
 /// Returns the list of lease IDs that were expired.
 pub fn expire_due_leases(tx: &Transaction, now: i64) -> Result<Vec<LeaseId>, AuthorityError> {
@@ -432,7 +505,7 @@ mod tests {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let tx = store.transaction().unwrap();
 
-        let token = get_next_fencing_token(&tx, &make_resource("t1")).unwrap();
+        let token = allocate_next_fencing_token(&tx, &make_resource("t1")).unwrap();
         assert_eq!(token, FencingToken(1));
 
         tx.rollback().unwrap();
@@ -445,7 +518,7 @@ mod tests {
         let tx = store.transaction().unwrap();
 
         let resource = make_resource("t1");
-        let token1 = get_next_fencing_token(&tx, &resource).unwrap();
+        let token1 = allocate_next_fencing_token(&tx, &resource).unwrap();
         assert_eq!(token1, FencingToken(1));
 
         let lease = LeaseRecord {
@@ -464,7 +537,7 @@ mod tests {
         };
         insert_lease(&tx, &lease).unwrap();
 
-        let token2 = get_next_fencing_token(&tx, &resource).unwrap();
+        let token2 = allocate_next_fencing_token(&tx, &resource).unwrap();
         assert_eq!(token2, FencingToken(2));
 
         tx.commit().unwrap();
@@ -505,7 +578,7 @@ mod tests {
         insert_lease(&tx, &lease).unwrap();
 
         // Next token must be 6, derived from high-water mark, not MAX(leases)
-        let next = get_next_fencing_token(&tx, &resource).unwrap();
+        let next = allocate_next_fencing_token(&tx, &resource).unwrap();
         assert_eq!(next, FencingToken(6));
 
         tx.commit().unwrap();
@@ -527,7 +600,7 @@ mod tests {
             .unwrap();
 
         // Next allocation must fail closed, not wrap or corrupt
-        let err = get_next_fencing_token(&tx, &resource).unwrap_err();
+        let err = allocate_next_fencing_token(&tx, &resource).unwrap_err();
         assert!(
             matches!(err, AuthorityError::InvalidRequest { ref message } if message.contains("overflow")),
             "expected overflow error, got {:?}",

@@ -52,20 +52,27 @@ impl LeaseService {
             });
         }
 
-        // Check for existing active lease (INV-025: one active attempt per resource)
+        // Check for existing active lease (INV-025: one active attempt per resource).
+        // Blocker #9: If the existing ACTIVE lease has already expired (expires_at <= now),
+        // mark it EXPIRED within this transaction and allow acquisition to proceed.
+        // This ensures expiry semantics work without requiring a perfectly timed sweeper.
         if let Some(existing) = repository::find_active_lease(tx, &request.resource)? {
-            return Err(AuthorityError::ResourceLocked {
-                resource_type: request.resource.resource_type.clone(),
-                resource_id: request.resource.resource_id.clone(),
-                owner_attempt_id: existing.owner_attempt_id,
-                current_fencing_token: existing.fencing_token,
-            });
+            if existing.expires_at <= now {
+                // Lease is temporally expired — mark it and continue acquisition
+                repository::expire_single_lease(tx, &existing.id, now, existing.version)?;
+            } else {
+                return Err(AuthorityError::ResourceLocked {
+                    resource_type: request.resource.resource_type.clone(),
+                    resource_id: request.resource.resource_id.clone(),
+                    owner_attempt_id: existing.owner_attempt_id,
+                    current_fencing_token: existing.fencing_token,
+                });
+            }
         }
 
         // Allocate next fencing token atomically within this transaction.
-        // This counts ALL prior leases (active, expired, revoked) to ensure
-        // monotonicity survives restarts and deletions.
-        let fencing_token = repository::get_next_fencing_token(tx, &request.resource)?;
+        // MUTATES the high-water mark — only called during acquisition, never validation.
+        let fencing_token = repository::allocate_next_fencing_token(tx, &request.resource)?;
 
         let lease = LeaseRecord {
             id: LeaseId(format!("LEASE-{}", uuid::Uuid::new_v4())),
@@ -170,10 +177,10 @@ impl LeaseService {
             });
         }
 
-        // Verify no higher token exists for this resource (supersession check)
-        let current_max = repository::get_next_fencing_token(tx, &lease.resource)?;
-        // get_next_fencing_token returns max+1, so current max is current_max - 1
-        let current_max_token = FencingToken(current_max.0.saturating_sub(1));
+        // Verify no higher token exists for this resource (supersession check).
+        // READ-ONLY: uses get_current_fencing_token to avoid mutating the
+        // high-water mark during validation (Blocker #1).
+        let current_max_token = repository::get_current_fencing_token(tx, &lease.resource)?;
         if current_max_token > lease.fencing_token {
             return Err(AuthorityError::StaleAuthority {
                 lease_id: lease_id.clone(),
@@ -797,5 +804,93 @@ mod tests {
         let l2 = acquire_lease(&mut store, &resource, "ATT-4", 300, 1100);
         assert_eq!(l2.fencing_token, FencingToken(2));
         assert_eq!(l2.owner_attempt_id, "ATT-4");
+    }
+
+    /// Blocker #1: validate_authority must be read-only.
+    /// Repeated validation must NOT consume fencing tokens or mutate the high-water mark.
+    #[test]
+    fn validate_authority_is_read_only() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let resource = make_resource("t1");
+        let lease = acquire_lease(&mut store, &resource, "att-1", 300, 1000);
+        assert_eq!(lease.fencing_token, FencingToken(1));
+
+        // Record high-water before validation
+        let tx = store.transaction().unwrap();
+        let hw_before = repository::get_current_fencing_token(&tx, &resource).unwrap();
+        assert_eq!(hw_before, FencingToken(1));
+        tx.rollback().unwrap();
+
+        // Validate 100 times — must all succeed and not mutate state
+        for _ in 0..100 {
+            let tx = store.transaction().unwrap();
+            let validated = LeaseService::validate_authority(
+                &tx,
+                &lease.id,
+                lease.fencing_token,
+                &resource,
+                "att-1",
+                1100,
+            )
+            .unwrap();
+            assert_eq!(validated.lease.fencing_token, FencingToken(1));
+            tx.rollback().unwrap();
+        }
+
+        // High-water must still be exactly 1
+        let tx = store.transaction().unwrap();
+        let hw_after = repository::get_current_fencing_token(&tx, &resource).unwrap();
+        assert_eq!(
+            hw_after,
+            FencingToken(1),
+            "high-water must not change during validation"
+        );
+        tx.rollback().unwrap();
+
+        // Next actual acquisition must receive token 2
+        let tx = store.transaction().unwrap();
+        LeaseService::revoke(&tx, &lease.id, 1200, lease.version).unwrap();
+        tx.commit().unwrap();
+
+        let l2 = acquire_lease(&mut store, &resource, "att-2", 300, 1300);
+        assert_eq!(
+            l2.fencing_token,
+            FencingToken(2),
+            "next acquisition after validation-only period must get token 2"
+        );
+    }
+
+    /// Blocker #9: acquire over temporally expired ACTIVE lease recovers automatically.
+    #[test]
+    fn acquire_over_temporally_expired_active_lease() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let resource = make_resource("t1");
+
+        // Acquire lease that expires at t=1100
+        let l1 = acquire_lease(&mut store, &resource, "att-1", 100, 1000);
+        assert_eq!(l1.expires_at, 1100);
+        assert_eq!(l1.fencing_token, FencingToken(1));
+
+        // Acquire at t=1101 WITHOUT calling expire_due() first.
+        // The existing ACTIVE lease is temporally expired, so acquisition should:
+        // 1. Mark old lease EXPIRED
+        // 2. Succeed with higher fencing token
+        let l2 = acquire_lease(&mut store, &resource, "att-2", 300, 1101);
+        assert_eq!(
+            l2.fencing_token,
+            FencingToken(2),
+            "new lease must have higher fencing token"
+        );
+        assert_eq!(l2.owner_attempt_id, "att-2");
+
+        // Old lease must now be EXPIRED
+        let tx = store.transaction().unwrap();
+        let old = repository::find_by_id(&tx, &l1.id).unwrap().unwrap();
+        assert_eq!(
+            old.status,
+            LeaseStatus::Expired,
+            "temporally expired lease must be marked EXPIRED during acquisition"
+        );
+        tx.rollback().unwrap();
     }
 }
