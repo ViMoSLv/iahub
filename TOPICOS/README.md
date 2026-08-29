@@ -32,10 +32,10 @@
 
 | # | Tópico | Status | Bloqueado por |
 |---|--------|--------|---------------|
-| 01 | Arquitetura e Invariantes | 🔲 Não iniciado | — |
-| 02 | Domain Model e State Machines | 🔲 Não iniciado | 01 |
-| 03 | Storage e SQLite Schema | 🔲 Não iniciado | 01, 02 |
-| 04 | Command, Idempotency, Concurrency | 🔲 Não iniciado | 02, 03 |
+| 01 | Arquitetura e Invariantes | ✅ Concluído | — |
+| 02 | Domain Model e State Machines | ✅ Concluído | 01 |
+| 03 | Storage e SQLite Schema | ✅ Concluído | 01, 02 |
+| 04 | Command, Idempotency, Concurrency | ✅ Concluído | 02, 03 |
 | 05 | Workspace Isolation e Write Scope | 🔲 Não iniciado | 03, 04 |
 | 06 | Verificação, Review e Merge | 🔲 Não iniciado | 04, 05 |
 | 07 | Provider Adapters e Session Holder | 🔲 Não iniciado | 04, 05 |

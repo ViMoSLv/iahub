@@ -96,7 +96,7 @@ On startup, the Hub reconciles: leases, operations, workspaces, sessions, and ta
 
 ## Related Documents
 
-- [INVARIANTS.md](./INVARIANTS.md) — INV-001 through INV-036
+- [INVARIANTS.md](./INVARIANTS.md) — INV-001 through INV-041
 - [STATE-MACHINES.md](./STATE-MACHINES.md) — Exhaustive transition tables
-- [adr/](./adr/) — Architectural Decision Records ADR-0001 through ADR-0010
+- [adr/](./adr/) — Architectural Decision Records ADR-0001 through ADR-0011
 - [TOPICOS/](./TOPICOS/) — Implementation topic breakdown
