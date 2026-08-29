@@ -183,7 +183,7 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-025",
         statement: "Only one Attempt per Task may be in an active state (LEASED, STARTING, ACTIVE, SUBMITTED) at any time.",
-        test_fn: "domain::tests::attempt_active_states_match_inv_025",
+        test_fn: "authority::service::tests::inv_025_one_active_attempt_per_task",
         coverage: InvariantCoverage::Enforced,
     },
     // ── Workspace and Scope (26–27) ──────────────────────────────────────
