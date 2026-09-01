@@ -37,8 +37,8 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-001",
         statement: "Agents are disposable; no orchestration state depends on agent liveness.",
-        test_fn: "test_inv_001_agents_disposable",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "authority::service::tests::acquire_over_temporally_expired_active_lease",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-002",
@@ -67,8 +67,8 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-006",
         statement: "The agent that produced a candidate cannot be the reviewer of that same candidate.",
-        test_fn: "test_inv_006_no_self_review",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "domain::verification::tests::inv_006_reviewer_must_differ_from_producer",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-007",

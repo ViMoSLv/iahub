@@ -182,6 +182,13 @@ impl ReviewVerdict {
     pub fn is_fresh_for_candidate(&self, current_candidate_sha: &str) -> bool {
         self.candidate_sha == current_candidate_sha
     }
+
+    /// Validate that the reviewer identity differs from the producer agent identity.
+    /// Workers cannot certify their own success (Principle 6, INV-006).
+    /// Returns true if the verdict passes the independence check.
+    pub fn has_independent_reviewer(&self, producer_agent_id: &str) -> bool {
+        self.reviewer_id != producer_agent_id
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -703,5 +710,36 @@ mod tests {
         // when verification couldn't complete (Principle 7).
         assert_ne!(VerificationOutcome::Inconclusive, VerificationOutcome::Passed);
         assert_ne!(VerificationOutcome::Inconclusive, VerificationOutcome::Failed);
+    }
+
+    #[test]
+    fn inv_006_reviewer_must_differ_from_producer() {
+        // INV-006: The agent that produced a candidate cannot be the reviewer.
+        let verdict = ReviewVerdict {
+            id: VerificationReviewId::from("REV-SELF"),
+            task_id: TaskId::from("TASK-142"),
+            attempt_id: AttemptId::from("ATT-1"),
+            candidate_sha: "abc123".to_string(),
+            diff_sha256: "d".repeat(64),
+            task_spec_revision: EntityVersion(1),
+            acceptance_revision: EntityVersion(1),
+            verification_evidence_ids: vec![],
+            reviewer_id: "agent-alice".to_string(),
+            decision: ReviewDecision::Approved,
+            feedback: None,
+            created_at: Timestamp("2026-08-31T13:00:00Z".to_string()),
+        };
+
+        // Same identity as producer → fails independence check
+        assert!(
+            !verdict.has_independent_reviewer("agent-alice"),
+            "self-review must be rejected"
+        );
+
+        // Different identity → passes
+        assert!(
+            verdict.has_independent_reviewer("agent-bob"),
+            "independent reviewer must be accepted"
+        );
     }
 }

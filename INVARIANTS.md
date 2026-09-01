@@ -19,12 +19,12 @@
 
 | ID | Statement | Test Function | Coverage |
 |----|-----------|---------------|----------|
-| INV-001 | Agents are disposable; no orchestration state depends on agent liveness. | `test_inv_001_agents_disposable` | PLANNED |
+| INV-001 | Agents are disposable; no orchestration state depends on agent liveness. | `authority::service::tests::acquire_over_temporally_expired_active_lease` | ENFORCED |
 | INV-002 | No two active Attempts share the same workspace path. | `test_inv_002_no_shared_workspace` | PLANNED |
 | INV-003 | Agent-to-agent communication occurs only through durable state, never direct chat. | `test_inv_003_state_not_conversation` | PLANNED |
 | INV-004 | Every external side effect has a corresponding operations journal entry before execution. | `operations::service::tests::prepare_persists_before_execution` | ENFORCED |
 | INV-005 | Reported agent outcome is never trusted without independent observational verification. | `domain::delegation::tests::worker_report_is_separate_from_verification` | ENFORCED |
-| INV-006 | The agent that produced a candidate cannot be the reviewer of that same candidate. | `test_inv_006_no_self_review` | PLANNED |
+| INV-006 | The agent that produced a candidate cannot be the reviewer of that same candidate. | `domain::verification::tests::inv_006_reviewer_must_differ_from_producer` | ENFORCED |
 | INV-007 | When state cannot be determined, it remains UNKNOWN rather than defaulting to success or failure. | `domain::delegation::tests::unknown_verification_outcome_fails_deserialization` | ENFORCED |
 
 ## Storage and Authority Invariants (Principles 8–14)
