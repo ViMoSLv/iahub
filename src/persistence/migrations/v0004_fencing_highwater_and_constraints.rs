@@ -166,14 +166,14 @@ mod tests {
     }
 
     #[test]
-    fn current_schema_version_is_4() {
-        assert_eq!(CURRENT_SCHEMA_VERSION, 4);
+    fn current_schema_version_is_at_least_4() {
+        const { assert!(CURRENT_SCHEMA_VERSION >= 4) };
     }
 
     #[test]
-    fn fresh_db_migrates_to_v4() {
+    fn fresh_db_migrates_to_current() {
         let store = SqliteStore::open_in_memory().unwrap();
         let v = store.schema_version().unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, CURRENT_SCHEMA_VERSION);
     }
 }

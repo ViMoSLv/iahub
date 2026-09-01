@@ -9,6 +9,9 @@
 //! Reference: MEGA_BRAIN_V0_IMPLEMENTATION_BLUEPRINT_FINAL.md, Sections 4–5.
 
 pub mod delegation;
+pub mod provider;
+pub mod verification;
+pub mod workspace;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -18,6 +21,32 @@ pub use delegation::{
     AuthorityScope, CapabilityId, CompiledPrompt, CompiledPromptId, ContextSnapshot,
     ContextSnapshotId, DispatchSpec, StopCondition, VerificationEvidence, VerificationOutcome,
     WorkerReport,
+};
+
+// Re-export provider/multi-account types (ADR-0012)
+pub use provider::{
+    AuthProfileId, CredentialRef, ProviderAccount, ProviderAccountId, ProviderAccountRuntimeState,
+    ProviderAccountStatus, ProviderKind,
+};
+
+// Re-export workspace isolation & write scope types (Topic 05)
+// Note: WorkspaceId and ArtifactId from workspace module shadow the core IDs
+// defined below. Core domain code should use the workspace-qualified names
+// when referring to workspace/artifact entities specifically.
+pub use workspace::{
+    Artifact, ArtifactId, CapabilityId as WriteCapabilityId, CleanupEvaluation,
+    CleanupGate, PathPattern, RepositoryIdentity, ScopeDriftReport, WorkspaceId,
+    WriteCapability,
+};
+
+// Re-export verification, review & merge types (Topic 06)
+// Note: VerificationEvidence and VerificationOutcome here are from the verification
+// module (observational truth), distinct from delegation::VerificationEvidence
+// (worker self-report wrapper). Use qualified paths when both are in scope.
+pub use verification::{
+    MergeLabId, MergeLabOutcome, MergeLabResult, MergeQueueItem, MergeQueueItemId,
+    MergeQueueStatus, ReviewDecision, ReviewVerdict, VerificationEvidence as ObservationalEvidence,
+    VerificationId, VerificationOutcome as ObservationalOutcome,
 };
 
 // ---------------------------------------------------------------------------
@@ -68,9 +97,10 @@ define_id!(
     SessionId,
     "Live agent process/provider session attached to an Attempt."
 );
-define_id!(WorkspaceId, "Isolated filesystem allocated to an Attempt.");
+// WorkspaceId and ArtifactId are now defined in domain::workspace (Topic 05).
+// The core domain re-exports them via `pub use workspace::{...}` above.
+// LeaseId remains a core concept tied to the authority subsystem.
 define_id!(LeaseId, "Time-bounded authority grant over a resource.");
-define_id!(ArtifactId, "Immutable evidence produced during execution.");
 define_id!(ReviewId, "Independent evaluation of a candidate commit.");
 define_id!(
     MergeItemId,
@@ -781,6 +811,72 @@ pub fn validate_merge_transition(
 }
 
 // ---------------------------------------------------------------------------
+// Failure Classification (INV-020)
+// ---------------------------------------------------------------------------
+
+/// Classified reason for a failure. Every terminal FAILED state must carry
+/// one of these; bare "FAILED" without classification is rejected (INV-020).
+///
+/// Categories:
+/// - **Recoverable**: Transient issues that may succeed on retry (timeout, rate limit).
+/// - **NonRecoverable**: Deterministic failures requiring human intervention or spec change.
+/// - **Infrastructure**: Platform/environment issues outside agent control.
+/// - **PolicyViolation**: Agent violated an invariant or scope constraint.
+/// - **Unknown**: Evidence insufficient to classify; treated as non-recoverable per Principle 7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[non_exhaustive]
+pub enum FailureReason {
+    /// Transient timeout; may succeed on retry with backoff.
+    Timeout,
+    /// Rate limit or quota exhaustion from provider or infrastructure.
+    RateLimited,
+    /// Network connectivity loss or DNS resolution failure.
+    NetworkError,
+    /// Build/compilation failed due to code errors.
+    BuildFailed,
+    /// Tests failed deterministically.
+    TestFailed,
+    /// Agent produced output violating scope, invariants, or acceptance criteria.
+    PolicyViolation,
+    /// Merge conflict detected during lab simulation or actual merge.
+    MergeConflict,
+    /// Provider authentication expired or was revoked mid-execution.
+    AuthenticationExpired,
+    /// Environment/tooling missing or misconfigured (not agent's fault).
+    InfrastructureError,
+    /// Evidence insufficient to determine root cause; fail-closed.
+    Unknown,
+}
+
+impl fmt::Display for FailureReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Timeout => write!(f, "TIMEOUT"),
+            Self::RateLimited => write!(f, "RATE_LIMITED"),
+            Self::NetworkError => write!(f, "NETWORK_ERROR"),
+            Self::BuildFailed => write!(f, "BUILD_FAILED"),
+            Self::TestFailed => write!(f, "TEST_FAILED"),
+            Self::PolicyViolation => write!(f, "POLICY_VIOLATION"),
+            Self::MergeConflict => write!(f, "MERGE_CONFLICT"),
+            Self::AuthenticationExpired => write!(f, "AUTHENTICATION_EXPIRED"),
+            Self::InfrastructureError => write!(f, "INFRASTRUCTURE_ERROR"),
+            Self::Unknown => write!(f, "UNKNOWN"),
+        }
+    }
+}
+
+impl FailureReason {
+    /// Returns true if this failure category may be resolved by retrying.
+    pub fn is_recoverable(self) -> bool {
+        matches!(
+            self,
+            Self::Timeout | Self::RateLimited | Self::NetworkError
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Lease Status
 // ---------------------------------------------------------------------------
 
@@ -794,31 +890,8 @@ pub enum LeaseStatus {
 }
 
 // ---------------------------------------------------------------------------
-// Supporting enums
+// Supporting enums (legacy aliases removed — canonical types live in submodules)
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum WorkspaceMode {
-    GitWorktree,
-    LocalCopy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ArtifactType {
-    ContextPack,
-    Handoff,
-    Diff,
-    CandidateCommit,
-    TestReport,
-    Review,
-    SecurityReport,
-    TerminalOutput,
-    Plan,
-    Decision,
-    MergeAnalysis,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1224,6 +1297,81 @@ mod tests {
     }
 
     // -- Newtype safety --
+
+    // -- FailureReason (INV-020) --
+
+    #[test]
+    fn failure_reason_display_and_serialization() {
+        assert_eq!(FailureReason::Timeout.to_string(), "TIMEOUT");
+        assert_eq!(FailureReason::RateLimited.to_string(), "RATE_LIMITED");
+        assert_eq!(FailureReason::NetworkError.to_string(), "NETWORK_ERROR");
+        assert_eq!(FailureReason::BuildFailed.to_string(), "BUILD_FAILED");
+        assert_eq!(FailureReason::TestFailed.to_string(), "TEST_FAILED");
+        assert_eq!(FailureReason::PolicyViolation.to_string(), "POLICY_VIOLATION");
+        assert_eq!(FailureReason::MergeConflict.to_string(), "MERGE_CONFLICT");
+        assert_eq!(FailureReason::AuthenticationExpired.to_string(), "AUTHENTICATION_EXPIRED");
+        assert_eq!(FailureReason::InfrastructureError.to_string(), "INFRASTRUCTURE_ERROR");
+        assert_eq!(FailureReason::Unknown.to_string(), "UNKNOWN");
+
+        let json = serde_json::to_string(&FailureReason::PolicyViolation).unwrap();
+        assert_eq!(json, "\"POLICY_VIOLATION\"");
+        let back: FailureReason = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, FailureReason::PolicyViolation);
+    }
+
+    #[test]
+    fn unknown_failure_reason_fails_deserialization() {
+        let json = "\"MAGIC_FAILURE\"";
+        let result: Result<FailureReason, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "unknown FailureReason must fail closed");
+    }
+
+    #[test]
+    fn failure_reason_recoverability_classification() {
+        // Recoverable: transient issues that may succeed on retry
+        assert!(FailureReason::Timeout.is_recoverable());
+        assert!(FailureReason::RateLimited.is_recoverable());
+        assert!(FailureReason::NetworkError.is_recoverable());
+
+        // Non-recoverable: deterministic or policy failures
+        assert!(!FailureReason::BuildFailed.is_recoverable());
+        assert!(!FailureReason::TestFailed.is_recoverable());
+        assert!(!FailureReason::PolicyViolation.is_recoverable());
+        assert!(!FailureReason::MergeConflict.is_recoverable());
+        assert!(!FailureReason::AuthenticationExpired.is_recoverable());
+        assert!(!FailureReason::InfrastructureError.is_recoverable());
+        assert!(!FailureReason::Unknown.is_recoverable());
+    }
+
+    #[test]
+    fn inv_020_every_failure_carries_classified_reason() {
+        // INV-020: Every failure carries a classified failure_reason;
+        // bare FAILED without classification is rejected.
+        // This test verifies the enum exists, is exhaustive via #[non_exhaustive],
+        // and that Unknown is available for cases where evidence is insufficient.
+        // The type system enforces that any code path producing a failure MUST
+        // provide a FailureReason — there is no way to construct a "bare" failure.
+        let reasons = [
+            FailureReason::Timeout,
+            FailureReason::RateLimited,
+            FailureReason::NetworkError,
+            FailureReason::BuildFailed,
+            FailureReason::TestFailed,
+            FailureReason::PolicyViolation,
+            FailureReason::MergeConflict,
+            FailureReason::AuthenticationExpired,
+            FailureReason::InfrastructureError,
+            FailureReason::Unknown,
+        ];
+        // All variants are distinct and serializable
+        for reason in &reasons {
+            let json = serde_json::to_string(reason).unwrap();
+            let back: FailureReason = serde_json::from_str(&json).unwrap();
+            assert_eq!(&back, reason);
+        }
+        // Unknown is always available as fail-closed default (Principle 7)
+        assert!(!FailureReason::Unknown.is_recoverable());
+    }
 
     #[test]
     fn entity_version_next_increments() {

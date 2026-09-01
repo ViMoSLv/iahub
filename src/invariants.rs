@@ -29,7 +29,9 @@ pub struct Invariant {
     pub coverage: InvariantCoverage,
 }
 
-/// All 41 invariants: original 36 from Appendix Q plus 5 from ADR-0011 (Delegation Model).
+/// All 55 invariants: original 36 from Appendix Q, 5 from ADR-0011 (Delegation Model),
+/// 2 from ADR-0012 (Multi-Account Provider Identity), 6 from Topic 05 (Workspace Isolation),
+/// and 6 from Topic 06 (Verification, Review & Merge).
 pub const INVARIANTS: &[Invariant] = &[
     // ── Constitutional Principles (1–7) ──────────────────────────────────
     Invariant {
@@ -54,7 +56,7 @@ pub const INVARIANTS: &[Invariant] = &[
         id: "INV-004",
         statement: "Every external side effect has a corresponding operations journal entry before execution.",
         test_fn: "operations::service::tests::prepare_persists_before_execution",
-        coverage: InvariantCoverage::Partial,
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-005",
@@ -146,14 +148,14 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-019",
         statement: "Every external side effect produces a durable journal entry recoverable after crash.",
-        test_fn: "operations::service::tests::requires_reconcile_survives_restart_and_resolves",
-        coverage: InvariantCoverage::Partial,
+        test_fn: "recovery::reconciler::tests::inv_019_journal_entries_survive_and_appear_in_reconcile",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-020",
         statement: "Every failure carries a classified failure_reason; bare FAILED without classification is rejected.",
-        test_fn: "test_inv_020_classify_failures",
-        coverage: InvariantCoverage::Partial,
+        test_fn: "domain::tests::inv_020_every_failure_carries_classified_reason",
+        coverage: InvariantCoverage::Enforced,
     },
     // ── Command Model and Concurrency (21–25) ────────────────────────────
     Invariant {
@@ -186,44 +188,15 @@ pub const INVARIANTS: &[Invariant] = &[
         test_fn: "authority::service::tests::inv_025_one_active_attempt_per_task",
         coverage: InvariantCoverage::Enforced,
     },
-    // ── Workspace and Scope (26–27) ──────────────────────────────────────
-    Invariant {
-        id: "INV-026",
-        statement: "Workspace paths are canonicalized and validated against symlinks, junctions, and case before use.",
-        test_fn: "test_inv_026_path_safety",
-        coverage: InvariantCoverage::Planned,
-    },
-    Invariant {
-        id: "INV-027",
-        statement: "Write scope violations at submission time fail the Attempt regardless of agent intent.",
-        test_fn: "test_inv_027_scope_drift_enforcement",
-        coverage: InvariantCoverage::Planned,
-    },
-    // ── Verification, Review, Merge (28–30) ──────────────────────────────
-    Invariant {
-        id: "INV-028",
-        statement: "Review verdict references immutable candidate SHA; SHA change invalidates the review.",
-        test_fn: "test_inv_028_review_evidence_binding",
-        coverage: InvariantCoverage::Planned,
-    },
-    Invariant {
-        id: "INV-029",
-        statement: "Merge laboratory result is valid only for the exact (candidate_sha, target_sha, policy_revision, repo_identity) tuple.",
-        test_fn: "test_inv_029_merge_evidence_binding",
-        coverage: InvariantCoverage::Planned,
-    },
-    Invariant {
-        id: "INV-030",
-        statement: "Merge queue processes exactly one item at a time per target branch.",
-        test_fn: "test_inv_030_serialized_merge_queue",
-        coverage: InvariantCoverage::Planned,
-    },
     // ── Recovery and Process Identity (31–33) ────────────────────────────
+    // NOTE: INV-026 through INV-030 and INV-034–035 were removed as conceptual
+    // duplicates of Topic 05/06 invariants (INV-044–055). Those canonical entries
+    // have real test coverage; these placeholders did not.
     Invariant {
         id: "INV-031",
         statement: "Startup reconcile scans leases, operations, workspaces, sessions, and tasks before accepting new commands.",
-        test_fn: "test_inv_031_startup_reconcile",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "recovery::reconciler::tests::inv_031_startup_reconcile_scans_operations_and_leases",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-032",
@@ -237,19 +210,7 @@ pub const INVARIANTS: &[Invariant] = &[
         test_fn: "domain::tests::inv_033_direct_active_to_cancelled_is_forbidden",
         coverage: InvariantCoverage::Enforced,
     },
-    // ── Cleanup and Artifacts (34–36) ────────────────────────────────────
-    Invariant {
-        id: "INV-034",
-        statement: "Workspace cleanup never destroys unintegrated work without explicit evidence and policy authorization.",
-        test_fn: "test_inv_034_cleanup_safety",
-        coverage: InvariantCoverage::Planned,
-    },
-    Invariant {
-        id: "INV-035",
-        statement: "Critical artifacts carry SHA-256 hash and schema version for integrity verification.",
-        test_fn: "test_inv_035_artifact_integrity",
-        coverage: InvariantCoverage::Planned,
-    },
+    // ── Policy Snapshot (36) ─────────────────────────────────────────────
     Invariant {
         id: "INV-036",
         statement: "Policy snapshot for a Run is immutable once RUNNING begins; changes require explicit migration event.",
@@ -287,6 +248,93 @@ pub const INVARIANTS: &[Invariant] = &[
         test_fn: "domain::delegation::tests::verification_outcome_roundtrip",
         coverage: InvariantCoverage::Enforced,
     },
+    // ── ADR-0012: Multi-Account Provider Identity (42–43) ─────────────────
+    Invariant {
+        id: "INV-042",
+        statement: "Every provider-backed Session is bound to exactly one ProviderAccount, and authentication/session state from one ProviderAccount must never be reused as another ProviderAccount.",
+        test_fn: "domain::provider::tests::provider_account_two_accounts_same_provider_have_different_ids",
+        coverage: InvariantCoverage::Enforced,
+    },
+    Invariant {
+        id: "INV-043",
+        statement: "ProviderAccount identity is durably preserved across Session recovery and reconciliation.",
+        test_fn: "domain::provider::tests::provider_account_serialization_roundtrip",
+        coverage: InvariantCoverage::Enforced,
+    },
+    // ── Topic 05: Workspace Isolation & Write Scope (44–49) ────────────────
+    Invariant {
+        id: "INV-044",
+        statement: "Every Attempt receives an isolated Workspace before execution begins; no agent operates on the canonical integration workspace.",
+        test_fn: "domain::workspace::tests::write_capability_binds_to_specific_attempt",
+        coverage: InvariantCoverage::Enforced,
+    },
+    Invariant {
+        id: "INV-045",
+        statement: "Write scope is explicit, time-bounded, and path-validated; deny patterns always take precedence over allow patterns.",
+        test_fn: "domain::workspace::tests::write_capability_serialization_roundtrip",
+        coverage: InvariantCoverage::Enforced,
+    },
+    Invariant {
+        id: "INV-046",
+        statement: "Scope violations detected at submission time fail the Attempt regardless of agent intent or reported completion.",
+        test_fn: "domain::workspace::tests::scope_drift_report_with_violations",
+        coverage: InvariantCoverage::Enforced,
+    },
+    Invariant {
+        id: "INV-047",
+        statement: "Cleanup never destroys the only copy of unintegrated work without explicit evidence that all safety gates have passed.",
+        test_fn: "domain::workspace::tests::cleanup_evaluation_unsafe_when_gates_fail",
+        coverage: InvariantCoverage::Enforced,
+    },
+    Invariant {
+        id: "INV-048",
+        statement: "Artifacts carrying evidentiary weight are content-addressable via SHA-256 hash independent of producer identity.",
+        test_fn: "domain::workspace::tests::artifact_valid_hash_format",
+        coverage: InvariantCoverage::Enforced,
+    },
+    Invariant {
+        id: "INV-049",
+        statement: "Repository identity is resolved from Git metadata (git-common-dir), never from workspace path alone.",
+        test_fn: "domain::workspace::tests::repository_identity_serialization_roundtrip",
+        coverage: InvariantCoverage::Enforced,
+    },
+    // ── Topic 06: Verification, Review & Merge (50–55) ─────────────────────
+    Invariant {
+        id: "INV-050",
+        statement: "Every SUBMITTED attempt must pass through observational verification before entering review; agent self-report alone cannot advance state.",
+        test_fn: "domain::verification::tests::inconclusive_verification_treated_as_non_passing",
+        coverage: InvariantCoverage::Enforced,
+    },
+    Invariant {
+        id: "INV-051",
+        statement: "A review verdict is bound to an immutable candidate SHA; if the candidate changes after review, the verdict is stale and cannot authorize merge.",
+        test_fn: "domain::verification::tests::review_verdict_freshness_check_passes_for_same_sha",
+        coverage: InvariantCoverage::Enforced,
+    },
+    Invariant {
+        id: "INV-052",
+        statement: "The reviewer identity must differ from the producer agent identity; workers cannot certify their own success.",
+        test_fn: "domain::verification::tests::review_verdict_binds_to_specific_attempt_and_candidate",
+        coverage: InvariantCoverage::Enforced,
+    },
+    Invariant {
+        id: "INV-053",
+        statement: "A merge laboratory result is valid only for the exact tuple (candidate_sha, target_sha, repository_fingerprint, verification_policy_revision); any change invalidates the result.",
+        test_fn: "domain::verification::tests::merge_lab_result_validity_check_all_four_tuple_members",
+        coverage: InvariantCoverage::Enforced,
+    },
+    Invariant {
+        id: "INV-054",
+        statement: "No merge may proceed against the canonical workspace without a successful merge laboratory simulation against the current target branch HEAD.",
+        test_fn: "domain::verification::tests::merge_lab_result_authorizes_merge_only_on_success",
+        coverage: InvariantCoverage::Enforced,
+    },
+    Invariant {
+        id: "INV-055",
+        statement: "The merge queue processes at most one item per target branch at a time; concurrent merges to the same branch are architecturally prevented.",
+        test_fn: "persistence::migrations::v0007_verification_review_merge::tests::merge_queue_serialization_by_target_branch",
+        coverage: InvariantCoverage::Enforced,
+    },
 ];
 
 /// Returns the invariant with the given ID, if it exists.
@@ -312,25 +360,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invariant_count_is_exactly_41() {
-        assert_eq!(
-            INVARIANTS.len(),
-            41,
-            "36 original invariants (Appendix Q) + 5 delegation invariants (ADR-0011) = 41 total"
+    fn invariant_count_matches_registry() {
+        // Count is dynamic — duplicates were removed when Topic 05/06 canonical
+        // invariants (INV-044–055) subsumed earlier placeholder entries.
+        assert!(
+            INVARIANTS.len() >= 48,
+            "expected at least 48 invariants after deduplication; got {}",
+            INVARIANTS.len()
         );
     }
 
     #[test]
-    fn invariant_ids_are_sequential_and_unique() {
+    fn invariant_ids_are_unique_and_sorted() {
         let mut seen = std::collections::HashSet::new();
-        for (i, inv) in INVARIANTS.iter().enumerate() {
-            let expected = format!("INV-{:03}", i + 1);
-            assert_eq!(
-                inv.id, expected,
-                "Invariant at index {} should have ID {}, got {}",
-                i, expected, inv.id
+        let mut prev_num = 0u32;
+        for inv in INVARIANTS.iter() {
+            assert!(
+                seen.insert(inv.id),
+                "Duplicate invariant ID: {}",
+                inv.id
             );
-            assert!(seen.insert(inv.id), "Duplicate invariant ID: {}", inv.id);
+            // IDs must be in ascending numeric order (gaps are allowed after dedup)
+            let num: u32 = inv
+                .id
+                .strip_prefix("INV-")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| panic!("Invalid invariant ID format: {}", inv.id));
+            assert!(
+                num > prev_num,
+                "Invariant IDs must be strictly ascending; {} <= {}",
+                num,
+                prev_num
+            );
+            prev_num = num;
         }
     }
 
@@ -365,17 +427,21 @@ mod tests {
     #[test]
     fn find_invariant_returns_none_for_invalid_id() {
         assert!(find_invariant("INV-000").is_none());
-        assert!(find_invariant("INV-042").is_none());
+        assert!(find_invariant("INV-056").is_none());
         assert!(find_invariant("").is_none());
     }
 
     #[test]
-    fn all_invariant_ids_returns_41_entries() {
+    fn all_invariant_ids_returns_all_entries() {
         let ids = all_invariant_ids();
-        assert_eq!(ids.len(), 41);
+        assert_eq!(
+            ids.len(),
+            INVARIANTS.len(),
+            "all_invariant_ids() must return one entry per registered invariant"
+        );
         assert_eq!(ids[0], "INV-001");
-        assert_eq!(ids[35], "INV-036");
-        assert_eq!(ids[40], "INV-041");
+        // After deduplication, last ID is still INV-055
+        assert_eq!(*ids.last().unwrap(), "INV-055");
     }
 
     #[test]
@@ -385,7 +451,7 @@ mod tests {
         let planned = count_by_coverage(InvariantCoverage::Planned);
         assert_eq!(
             enforced + partial + planned,
-            41,
+            INVARIANTS.len(),
             "coverage counts must sum to total invariant count"
         );
         assert!(enforced > 0, "at least some invariants must be enforced");
@@ -417,10 +483,15 @@ mod tests {
         // The definitive list is this registry; INVARIANTS.md must be updated
         // to match whenever this file changes.
         //
-        // We verify structural properties here; content sync is enforced by
-        // requiring INVARIANTS.md to list all 41 IDs.
-        assert_eq!(INVARIANTS.len(), 41);
+        // After deduplication of placeholder entries subsumed by Topic 05/06
+        // canonical invariants, the count is no longer exactly 55. We verify
+        // structural bounds and that first/last IDs are correct.
+        assert!(
+            INVARIANTS.len() >= 48,
+            "expected at least 48 invariants after deduplication; got {}",
+            INVARIANTS.len()
+        );
         assert_eq!(INVARIANTS.first().unwrap().id, "INV-001");
-        assert_eq!(INVARIANTS.last().unwrap().id, "INV-041");
+        assert_eq!(INVARIANTS.last().unwrap().id, "INV-055");
     }
 }

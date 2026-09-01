@@ -15,6 +15,9 @@ mod v0001_initial;
 mod v0002_leases_operations;
 mod v0003_lease_fk_relaxation;
 mod v0004_fencing_highwater_and_constraints;
+mod v0005_provider_accounts;
+mod v0006_workspace_artifacts;
+mod v0007_verification_review_merge;
 
 /// A single named migration step.
 struct Migration {
@@ -44,6 +47,21 @@ const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "v0004_fencing_highwater_and_constraints",
         apply: v0004_fencing_highwater_and_constraints::apply,
+    },
+    Migration {
+        version: 5,
+        name: "v0005_provider_accounts",
+        apply: v0005_provider_accounts::apply,
+    },
+    Migration {
+        version: 6,
+        name: "v0006_workspace_artifacts",
+        apply: v0006_workspace_artifacts::apply,
+    },
+    Migration {
+        version: 7,
+        name: "v0007_verification_review_merge",
+        apply: v0007_verification_review_merge::apply,
     },
 ];
 

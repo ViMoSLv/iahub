@@ -5,6 +5,7 @@ pub mod domain;
 pub mod invariants;
 pub mod operations;
 pub mod persistence;
+pub mod recovery;
 
 pub use architecture::*;
 pub use commands::*;

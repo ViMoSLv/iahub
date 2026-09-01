@@ -443,6 +443,22 @@ pub fn expire_due_leases(tx: &Transaction, now: i64) -> Result<Vec<LeaseId>, Aut
     Ok(ids.into_iter().map(LeaseId).collect())
 }
 
+/// Count all ACTIVE leases. Used by startup reconciler to determine if any
+/// leases require heartbeat validation or expiry processing (INV-031).
+pub fn count_active_leases(tx: &Transaction) -> Result<usize, AuthorityError> {
+    let count: i64 = tx
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM leases WHERE status = 'ACTIVE'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| AuthorityError::Persistence {
+            message: format!("count_active_leases failed: {}", e),
+        })?;
+    Ok(count as usize)
+}
+
 /// Parse a lease row from a rusqlite Row.
 fn parse_lease_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<LeaseRecord> {
     let status_str: String = r.get(5)?;
