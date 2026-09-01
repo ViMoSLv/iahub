@@ -811,6 +811,99 @@ pub fn validate_merge_transition(
 }
 
 // ---------------------------------------------------------------------------
+// Process Identity (INV-032)
+// ---------------------------------------------------------------------------
+
+/// Unique identity for a Hub process instance. PID alone is insufficient because
+/// PIDs recycle; the combination of PID + start timestamp (or nonce) guarantees
+/// uniqueness across restarts and prevents stale process references (INV-032).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProcessIdentity {
+    /// Operating system process ID at time of startup.
+    pub pid: u32,
+    /// Monotonic timestamp (seconds since epoch) when this process started.
+    /// Combined with PID to prevent reuse after OS PID recycling.
+    pub started_at: i64,
+    /// Optional cryptographic nonce for additional uniqueness guarantee in
+    /// environments where PID + timestamp collisions are theoretically possible.
+    pub nonce: Option<String>,
+}
+
+impl ProcessIdentity {
+    /// Create a new process identity from PID and start timestamp.
+    pub fn new(pid: u32, started_at: i64) -> Self {
+        Self {
+            pid,
+            started_at,
+            nonce: None,
+        }
+    }
+
+    /// Create a new process identity with an explicit nonce.
+    pub fn with_nonce(pid: u32, started_at: i64, nonce: String) -> Self {
+        Self {
+            pid,
+            started_at,
+            nonce: Some(nonce),
+        }
+    }
+
+    /// Returns true if this identity has sufficient uniqueness guarantees.
+    /// PID alone is never sufficient (INV-032); must have either timestamp or nonce.
+    pub fn is_valid(&self) -> bool {
+        // Timestamp is always present and non-zero for valid identities
+        self.started_at > 0
+    }
+}
+
+impl fmt::Display for ProcessIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.nonce {
+            Some(n) => write!(f, "pid:{}@{}#{}", self.pid, self.started_at, n),
+            None => write!(f, "pid:{}@{}", self.pid, self.started_at),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Policy Snapshot (INV-036)
+// ---------------------------------------------------------------------------
+
+/// Immutable snapshot of policy configuration bound to a specific Run.
+/// Once a Run enters RUNNING state, its policy snapshot cannot change;
+/// any policy update requires an explicit migration event (INV-036).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicySnapshot {
+    /// Unique identifier for this snapshot version.
+    pub snapshot_id: String,
+    /// The Run this snapshot is bound to.
+    pub run_id: String,
+    /// Schema version of the policy at time of snapshot.
+    pub policy_schema_version: EntityVersion,
+    /// SHA-256 hash of the serialized policy content.
+    pub policy_hash: String,
+    /// When this snapshot was created (before Run entered RUNNING).
+    pub captured_at: Timestamp,
+    /// Whether the associated Run has entered RUNNING state.
+    /// Once true, this snapshot is frozen and cannot be replaced.
+    pub frozen: bool,
+}
+
+impl PolicySnapshot {
+    /// Returns true if this snapshot can still be replaced by a newer one.
+    /// Only unfrozen snapshots (Run not yet RUNNING) are replaceable.
+    pub fn is_replaceable(&self) -> bool {
+        !self.frozen
+    }
+
+    /// Freeze this snapshot, making it immutable for the remainder of the Run.
+    /// Called when the Run transitions to RUNNING state.
+    pub fn freeze(&mut self) {
+        self.frozen = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Failure Classification (INV-020)
 // ---------------------------------------------------------------------------
 
@@ -1371,6 +1464,117 @@ mod tests {
         }
         // Unknown is always available as fail-closed default (Principle 7)
         assert!(!FailureReason::Unknown.is_recoverable());
+    }
+
+    // -- ProcessIdentity (INV-032) --
+
+    #[test]
+    fn inv_032_process_identity_requires_timestamp_not_pid_alone() {
+        // INV-032: PID alone is insufficient for process identity.
+        // A valid ProcessIdentity must include a start timestamp.
+        let valid = ProcessIdentity::new(1234, 1700000000);
+        assert!(valid.is_valid(), "PID + timestamp must be valid");
+        assert_eq!(valid.pid, 1234);
+        assert_eq!(valid.started_at, 1700000000);
+        assert!(valid.nonce.is_none());
+
+        // Zero timestamp is invalid — proves timestamp is required
+        let invalid = ProcessIdentity { pid: 1234, started_at: 0, nonce: None };
+        assert!(!invalid.is_valid(), "PID alone (zero timestamp) must be invalid");
+    }
+
+    #[test]
+    fn inv_032_process_identity_with_nonce_is_valid() {
+        let identity = ProcessIdentity::with_nonce(5678, 1700000000, "abc-nonce".to_string());
+        assert!(identity.is_valid());
+        assert_eq!(identity.nonce, Some("abc-nonce".to_string()));
+    }
+
+    #[test]
+    fn inv_032_different_pids_same_timestamp_are_distinct() {
+        let a = ProcessIdentity::new(100, 1700000000);
+        let b = ProcessIdentity::new(200, 1700000000);
+        assert_ne!(a, b, "different PIDs at same time must be distinct identities");
+    }
+
+    #[test]
+    fn inv_032_same_pid_different_timestamps_are_distinct() {
+        // This is the core of INV-032: PID recycling means the same PID
+        // at different times represents different processes.
+        let old = ProcessIdentity::new(1000, 1600000000);
+        let recycled = ProcessIdentity::new(1000, 1700000000);
+        assert_ne!(old, recycled, "recycled PID with new timestamp must be a new identity");
+    }
+
+    #[test]
+    fn inv_032_process_identity_serialization_roundtrip() {
+        let identity = ProcessIdentity::with_nonce(9999, 1700000000, "unique-nonce".to_string());
+        let json = serde_json::to_string(&identity).unwrap();
+        let back: ProcessIdentity = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, identity);
+    }
+
+    #[test]
+    fn inv_032_process_identity_display_format() {
+        let without_nonce = ProcessIdentity::new(42, 1700000000);
+        assert_eq!(without_nonce.to_string(), "pid:42@1700000000");
+
+        let with_nonce = ProcessIdentity::with_nonce(42, 1700000000, "n1".to_string());
+        assert_eq!(with_nonce.to_string(), "pid:42@1700000000#n1");
+    }
+
+    // -- PolicySnapshot (INV-036) --
+
+    #[test]
+    fn inv_036_policy_snapshot_is_replaceable_before_freeze() {
+        let snapshot = PolicySnapshot {
+            snapshot_id: "snap-1".to_string(),
+            run_id: "run-1".to_string(),
+            policy_schema_version: EntityVersion(1),
+            policy_hash: "sha256-aabb".to_string(),
+            captured_at: Timestamp("2026-08-31T10:00:00Z".to_string()),
+            frozen: false,
+        };
+        assert!(snapshot.is_replaceable(), "unfrozen snapshot must be replaceable");
+    }
+
+    #[test]
+    fn inv_036_policy_snapshot_becomes_immutable_after_freeze() {
+        let mut snapshot = PolicySnapshot {
+            snapshot_id: "snap-2".to_string(),
+            run_id: "run-2".to_string(),
+            policy_schema_version: EntityVersion(3),
+            policy_hash: "sha256-ccdd".to_string(),
+            captured_at: Timestamp("2026-08-31T10:00:00Z".to_string()),
+            frozen: false,
+        };
+
+        // Freeze when Run enters RUNNING
+        snapshot.freeze();
+        assert!(!snapshot.is_replaceable(), "frozen snapshot must NOT be replaceable");
+        assert!(snapshot.frozen);
+
+        // Calling freeze again is idempotent
+        snapshot.freeze();
+        assert!(!snapshot.is_replaceable());
+    }
+
+    #[test]
+    fn inv_036_policy_snapshot_serialization_preserves_frozen_state() {
+        let mut snapshot = PolicySnapshot {
+            snapshot_id: "snap-3".to_string(),
+            run_id: "run-3".to_string(),
+            policy_schema_version: EntityVersion(5),
+            policy_hash: "sha256-eeff".to_string(),
+            captured_at: Timestamp("2026-08-31T12:00:00Z".to_string()),
+            frozen: true,
+        };
+
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let back: PolicySnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, snapshot);
+        assert!(back.frozen, "frozen state must survive serialization roundtrip");
+        assert!(!back.is_replaceable());
     }
 
     #[test]

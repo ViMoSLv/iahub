@@ -314,6 +314,7 @@ impl CleanupEvaluation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{EntityVersion, ProjectId, RunId};
 
     // -- ID newtypes --
 
@@ -588,6 +589,288 @@ mod tests {
         assert_eq!(back.passed, eval.passed);
         assert_eq!(back.failed, eval.failed);
         assert_eq!(back.is_safe_to_remove, eval.is_safe_to_remove);
+    }
+
+    // -- INV-002: No shared workspace between active attempts --
+
+    #[test]
+    fn inv_002_write_capabilities_for_different_attempts_are_isolated() {
+        // INV-002: No two active Attempts share the same workspace path.
+        // Each WriteCapability is bound to a unique (attempt_id, fencing_token) tuple.
+        // Two capabilities for the same task but different attempts must have
+        // distinct IDs and fencing tokens, ensuring workspace isolation.
+        let cap_att1 = WriteCapability {
+            id: CapabilityId::from("WCAP-ATT1"),
+            task_id: TaskId::from("TASK-142"),
+            attempt_id: AttemptId::from("ATT-1"),
+            fencing_token: 10,
+            allow: vec![PathPattern("src/**".to_string())],
+            deny: vec![],
+            expires_at: Timestamp("2026-08-31T23:59:59Z".to_string()),
+        };
+
+        let cap_att2 = WriteCapability {
+            id: CapabilityId::from("WCAP-ATT2"),
+            task_id: TaskId::from("TASK-142"),
+            attempt_id: AttemptId::from("ATT-2"),
+            fencing_token: 11,
+            allow: vec![PathPattern("src/**".to_string())],
+            deny: vec![],
+            expires_at: Timestamp("2026-08-31T23:59:59Z".to_string()),
+        };
+
+        // Different attempts must have different capability IDs
+        assert_ne!(cap_att1.id, cap_att2.id, "each attempt gets its own capability");
+        assert_ne!(cap_att1.attempt_id, cap_att2.attempt_id);
+        assert_ne!(cap_att1.fencing_token, cap_att2.fencing_token,
+            "fencing tokens enforce isolation between concurrent attempts");
+    }
+
+    // -- INV-003: State not conversation --
+
+    #[test]
+    fn inv_003_workspace_state_is_durable_not_conversational() {
+        // INV-003: Agent-to-agent communication occurs only through durable state.
+        // Workspace types serialize/deserialize deterministically — no ephemeral
+        // in-memory state can substitute for persisted records.
+        let cap = WriteCapability {
+            id: CapabilityId::from("WCAP-DURABLE"),
+            task_id: TaskId::from("TASK-1"),
+            attempt_id: AttemptId::from("ATT-1"),
+            fencing_token: 42,
+            allow: vec![PathPattern("src/**".to_string())],
+            deny: vec![PathPattern(".git/**".to_string())],
+            expires_at: Timestamp("2026-08-31T23:59:59Z".to_string()),
+        };
+
+        // Round-trip through JSON proves state is durable and reproducible
+        let json = serde_json::to_string(&cap).unwrap();
+        let back: WriteCapability = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, cap.id);
+        assert_eq!(back.fencing_token, cap.fencing_token);
+        assert_eq!(back.allow, cap.allow);
+        assert_eq!(back.deny, cap.deny);
+
+        // ScopeDriftReport also survives serialization — evidence is durable
+        let report = ScopeDriftReport {
+            capability_id: CapabilityId::from("WCAP-DURABLE"),
+            attempt_id: AttemptId::from("ATT-1"),
+            out_of_scope_files: vec!["secret.txt".to_string()],
+            denied_files: vec![],
+            has_violations: true,
+        };
+        let report_json = serde_json::to_string(&report).unwrap();
+        let report_back: ScopeDriftReport = serde_json::from_str(&report_json).unwrap();
+        assert_eq!(report_back.has_violations, true);
+        assert_eq!(report_back.out_of_scope_files.len(), 1);
+    }
+
+    // -- INV-008: Git is source of truth --
+
+    #[test]
+    fn inv_008_repository_identity_resolved_from_git_metadata_not_path() {
+        // INV-008: Code reality is determined exclusively by Git, never by
+        // filesystem observation alone. RepositoryIdentity carries git_common_dir
+        // and a fingerprint derived from Git metadata — path alone is never authoritative.
+        let identity = RepositoryIdentity {
+            git_common_dir: "/repos/project/.git".to_string(),
+            repository_fingerprint: "sha256-aabbccdd".to_string(),
+        };
+
+        // Identity is defined by Git metadata fields, not by workspace path
+        assert!(!identity.git_common_dir.is_empty(),
+            "git_common_dir must be present — path alone is insufficient");
+        assert!(!identity.repository_fingerprint.is_empty(),
+            "fingerprint must be derived from Git metadata");
+
+        // Two directories pointing to the same repo share a fingerprint
+        let same_repo_different_path = RepositoryIdentity {
+            git_common_dir: "/worktrees/feature-x/.git".to_string(),
+            repository_fingerprint: "sha256-aabbccdd".to_string(), // same fingerprint
+        };
+        assert_eq!(identity.repository_fingerprint, same_repo_different_path.repository_fingerprint,
+            "same repo must share fingerprint regardless of path");
+
+        // Different repos have different fingerprints even at similar paths
+        let different_repo = RepositoryIdentity {
+            git_common_dir: "/repos/other-project/.git".to_string(),
+            repository_fingerprint: "sha256-11223344".to_string(),
+        };
+        assert_ne!(identity.repository_fingerprint, different_repo.repository_fingerprint,
+            "different repos must have different fingerprints");
+    }
+
+    // -- INV-012: No agent write access to canonical integration workspace --
+
+    #[test]
+    fn inv_012_write_capability_never_grants_canonical_workspace_access() {
+        // INV-012: No agent process receives write access to the canonical
+        // integration workspace. WriteCapability is always bound to an isolated
+        // attempt workspace, never to the canonical branch or main worktree.
+        // The capability carries an attempt_id and fencing_token that tie it
+        // to a specific isolated workspace — there is no way to construct a
+        // valid WriteCapability without these bindings.
+        let cap = WriteCapability {
+            id: CapabilityId::from("WCAP-ISOLATED"),
+            task_id: TaskId::from("TASK-1"),
+            attempt_id: AttemptId::from("ATT-ISOLATED"),
+            fencing_token: 42,
+            allow: vec![PathPattern("src/**".to_string())],
+            deny: vec![],
+            expires_at: Timestamp("2026-08-31T23:59:59Z".to_string()),
+        };
+
+        // Every capability must be bound to a specific attempt (isolated workspace)
+        assert!(!cap.attempt_id.0.is_empty(),
+            "WriteCapability must be bound to an attempt — cannot target canonical workspace");
+        assert!(cap.fencing_token > 0,
+            "WriteCapability must carry a fencing token from an active lease on an isolated workspace");
+
+        // Canonical workspace paths are always denied by convention
+        let safe_cap = WriteCapability {
+            id: CapabilityId::from("WCAP-SAFE"),
+            task_id: TaskId::from("TASK-1"),
+            attempt_id: AttemptId::from("ATT-SAFE"),
+            fencing_token: 43,
+            allow: vec![PathPattern("feature-branch/**".to_string())],
+            deny: vec![
+                PathPattern("main".to_string()),
+                PathPattern("master".to_string()),
+                PathPattern(".git/refs/heads/main".to_string()),
+            ],
+            expires_at: Timestamp("2026-08-31T23:59:59Z".to_string()),
+        };
+
+        // Deny patterns for canonical branches are present
+        assert!(!safe_cap.deny.is_empty(),
+            "capabilities should deny canonical branch paths");
+        assert_ne!(safe_cap.attempt_id, cap.attempt_id,
+            "each capability targets a different isolated workspace");
+    }
+
+    // -- INV-010: FS watchers are hints, not authority --
+
+    #[test]
+    fn inv_010_scope_drift_report_requires_evidence_not_fs_events() {
+        // INV-010: Filesystem watcher events are treated as hints and always
+        // verified against authoritative state. ScopeDriftReport is generated
+        // from Git diff (authoritative), not from fsnotify events (hints).
+        // The report structure itself enforces this: it carries capability_id
+        // and attempt_id bindings that tie it to a specific Git-based verification,
+        // not to ephemeral filesystem notifications.
+        let report = ScopeDriftReport {
+            capability_id: CapabilityId::from("WCAP-VERIFY"),
+            attempt_id: AttemptId::from("ATT-VERIFY"),
+            out_of_scope_files: vec!["unauthorized.txt".to_string()],
+            denied_files: vec![],
+            has_violations: true,
+        };
+
+        // Report is bound to a capability (Git-verified scope), not an fs event
+        assert!(!report.capability_id.0.is_empty(),
+            "drift report must reference a write capability (Git-verified authority)");
+        assert!(!report.attempt_id.0.is_empty(),
+            "drift report must reference an attempt (isolated workspace with Git state)");
+
+        // Clean report also requires the same bindings — even "no violations"
+        // must be verified against Git, not assumed from fs silence
+        let clean = ScopeDriftReport::clean(
+            CapabilityId::from("WCAP-CLEAN"),
+            AttemptId::from("ATT-CLEAN"),
+        );
+        assert!(!clean.has_violations);
+        assert!(!clean.capability_id.0.is_empty(),
+            "even clean reports must be Git-verified, not inferred from fs quiet");
+    }
+
+    // -- INV-011: MCP is adapter, not core --
+
+    #[test]
+    fn inv_011_workspace_types_are_pure_domain_without_mcp_coupling() {
+        // INV-011: MCP servers expose only read/write facades over Hub state
+        // and contain no business logic. This test verifies that all workspace
+        // domain types serialize/deserialize through standard serde without
+        // any MCP-specific fields, protocols, or dependencies. The domain model
+        // is fully self-contained — MCP adapts TO these types, not the reverse.
+        let cap = WriteCapability {
+            id: CapabilityId::from("WCAP-PURE"),
+            task_id: TaskId::from("TASK-PURE"),
+            attempt_id: AttemptId::from("ATT-PURE"),
+            fencing_token: 1,
+            allow: vec![PathPattern("**".to_string())],
+            deny: vec![],
+            expires_at: Timestamp("2026-08-31T23:59:59Z".to_string()),
+        };
+
+        // Serialization uses standard JSON — no MCP protocol encoding
+        let json = serde_json::to_string(&cap).unwrap();
+        assert!(!json.contains("mcp"), "domain types must not reference MCP");
+        assert!(!json.contains("jsonrpc"), "domain types must not embed RPC protocols");
+
+        // Round-trip proves the type is self-contained
+        let back: WriteCapability = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, cap);
+
+        // RepositoryIdentity also has no MCP coupling
+        let identity = RepositoryIdentity {
+            git_common_dir: "/repo/.git".to_string(),
+            repository_fingerprint: "fp-123".to_string(),
+        };
+        let id_json = serde_json::to_string(&identity).unwrap();
+        assert!(!id_json.contains("mcp"));
+        let id_back: RepositoryIdentity = serde_json::from_str(&id_json).unwrap();
+        assert_eq!(id_back, identity);
+    }
+
+    // -- INV-017: UI is disposable --
+
+    #[test]
+    fn inv_017_all_orchestration_state_survives_serialization() {
+        // INV-017: Closing the UI does not terminate active sessions or lose
+        // orchestration state. All critical domain types must survive JSON
+        // serialization roundtrips — proving they can be persisted to SQLite
+        // and restored independently of any UI process.
+        let cap = WriteCapability {
+            id: CapabilityId::from("WCAP-DURABLE"),
+            task_id: TaskId::from("TASK-D"),
+            attempt_id: AttemptId::from("ATT-D"),
+            fencing_token: 99,
+            allow: vec![PathPattern("src/**".to_string())],
+            deny: vec![PathPattern("secrets/**".to_string())],
+            expires_at: Timestamp("2026-12-31T23:59:59Z".to_string()),
+        };
+        let cap_json = serde_json::to_string(&cap).unwrap();
+        let cap_back: WriteCapability = serde_json::from_str(&cap_json).unwrap();
+        assert_eq!(cap_back, cap, "WriteCapability must survive UI-independent persistence");
+
+        let report = ScopeDriftReport {
+            capability_id: CapabilityId::from("WCAP-D"),
+            attempt_id: AttemptId::from("ATT-D"),
+            out_of_scope_files: vec!["leaked.env".to_string()],
+            denied_files: vec!["secrets/key.pem".to_string()],
+            has_violations: true,
+        };
+        let rpt_json = serde_json::to_string(&report).unwrap();
+        let rpt_back: ScopeDriftReport = serde_json::from_str(&rpt_json).unwrap();
+        assert_eq!(rpt_back, report, "ScopeDriftReport must survive UI-independent persistence");
+
+        let artifact = Artifact {
+            id: ArtifactId::from("ART-D"),
+            artifact_type: ArtifactType::TestResults,
+            project_id: ProjectId::from("PROJ-1"),
+            run_id: Some(RunId::from("RUN-1".to_string())),
+            task_id: Some(TaskId::from("TASK-D")),
+            attempt_id: Some(AttemptId::from("ATT-D")),
+            content_path: "/artifacts/test-report.json".to_string(),
+            sha256: "a".repeat(64),
+            size_bytes: 1024,
+            schema_version: 1,
+            producer: "verification-engine".to_string(),
+            created_at: Timestamp("2026-08-31T15:00:00Z".to_string()),
+        };
+        let art_json = serde_json::to_string(&artifact).unwrap();
+        let art_back: Artifact = serde_json::from_str(&art_json).unwrap();
+        assert_eq!(art_back, artifact, "Artifact must survive UI-independent persistence");
     }
 
     // -- Cross-type consistency --

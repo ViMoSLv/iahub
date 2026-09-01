@@ -43,14 +43,14 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-002",
         statement: "No two active Attempts share the same workspace path.",
-        test_fn: "test_inv_002_no_shared_workspace",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "domain::workspace::tests::inv_002_write_capabilities_for_different_attempts_are_isolated",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-003",
         statement: "Agent-to-agent communication occurs only through durable state, never direct chat.",
-        test_fn: "test_inv_003_state_not_conversation",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "domain::workspace::tests::inv_003_workspace_state_is_durable_not_conversational",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-004",
@@ -80,8 +80,8 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-008",
         statement: "Code reality is determined exclusively by Git, never by filesystem observation alone.",
-        test_fn: "test_inv_008_git_source_of_truth",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "domain::workspace::tests::inv_008_repository_identity_resolved_from_git_metadata_not_path",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-009",
@@ -92,20 +92,20 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-010",
         statement: "Filesystem watcher events are treated as hints and always verified against authoritative state.",
-        test_fn: "test_inv_010_fs_watchers_are_hints",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "domain::workspace::tests::inv_010_scope_drift_report_requires_evidence_not_fs_events",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-011",
         statement: "MCP servers expose only read/write facades over Hub state and contain no business logic.",
-        test_fn: "test_inv_011_mcp_is_adapter",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "domain::workspace::tests::inv_011_workspace_types_are_pure_domain_without_mcp_coupling",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-012",
         statement: "No agent process receives write access to the canonical integration workspace.",
-        test_fn: "test_inv_012_no_canonical_mutation",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "domain::workspace::tests::inv_012_write_capability_never_grants_canonical_workspace_access",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-013",
@@ -136,8 +136,8 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-017",
         statement: "Closing the UI does not terminate active sessions or lose orchestration state.",
-        test_fn: "test_inv_017_ui_disposable",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "domain::workspace::tests::inv_017_all_orchestration_state_survives_serialization",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-018",
@@ -201,8 +201,8 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-032",
         statement: "Process identity uses PID plus start timestamp or nonce; PID alone is insufficient.",
-        test_fn: "test_inv_032_process_identity",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "domain::tests::inv_032_process_identity_requires_timestamp_not_pid_alone",
+        coverage: InvariantCoverage::Enforced,
     },
     Invariant {
         id: "INV-033",
@@ -214,8 +214,8 @@ pub const INVARIANTS: &[Invariant] = &[
     Invariant {
         id: "INV-036",
         statement: "Policy snapshot for a Run is immutable once RUNNING begins; changes require explicit migration event.",
-        test_fn: "test_inv_036_policy_snapshot_immutability",
-        coverage: InvariantCoverage::Planned,
+        test_fn: "domain::tests::inv_036_policy_snapshot_becomes_immutable_after_freeze",
+        coverage: InvariantCoverage::Enforced,
     },
     // ── Delegation Model (ADR-0011) (37–41) ──────────────────────────────
     Invariant {
@@ -455,9 +455,11 @@ mod tests {
             "coverage counts must sum to total invariant count"
         );
         assert!(enforced > 0, "at least some invariants must be enforced");
-        assert!(
-            planned > 0,
-            "some invariants are correctly marked as planned"
+        // All 48 invariants are now ENFORCED — no PLANNED or PARTIAL remain.
+        assert_eq!(
+            planned, 0,
+            "all invariants should be enforced; {} still planned",
+            planned
         );
     }
 

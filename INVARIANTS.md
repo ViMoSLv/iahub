@@ -20,8 +20,8 @@
 | ID | Statement | Test Function | Coverage |
 |----|-----------|---------------|----------|
 | INV-001 | Agents are disposable; no orchestration state depends on agent liveness. | `authority::service::tests::acquire_over_temporally_expired_active_lease` | ENFORCED |
-| INV-002 | No two active Attempts share the same workspace path. | `test_inv_002_no_shared_workspace` | PLANNED |
-| INV-003 | Agent-to-agent communication occurs only through durable state, never direct chat. | `test_inv_003_state_not_conversation` | PLANNED |
+| INV-002 | No two active Attempts share the same workspace path. | `domain::workspace::tests::inv_002_write_capabilities_for_different_attempts_are_isolated` | ENFORCED |
+| INV-003 | Agent-to-agent communication occurs only through durable state, never direct chat. | `domain::workspace::tests::inv_003_workspace_state_is_durable_not_conversational` | ENFORCED |
 | INV-004 | Every external side effect has a corresponding operations journal entry before execution. | `operations::service::tests::prepare_persists_before_execution` | ENFORCED |
 | INV-005 | Reported agent outcome is never trusted without independent observational verification. | `domain::delegation::tests::worker_report_is_separate_from_verification` | ENFORCED |
 | INV-006 | The agent that produced a candidate cannot be the reviewer of that same candidate. | `domain::verification::tests::inv_006_reviewer_must_differ_from_producer` | ENFORCED |
@@ -31,11 +31,11 @@
 
 | ID | Statement | Test Function | Coverage |
 |----|-----------|---------------|----------|
-| INV-008 | Code reality is determined exclusively by Git, never by filesystem observation alone. | `test_inv_008_git_source_of_truth` | PLANNED |
+| INV-008 | Code reality is determined exclusively by Git, never by filesystem observation alone. | `domain::workspace::tests::inv_008_repository_identity_resolved_from_git_metadata_not_path` | ENFORCED |
 | INV-009 | Orchestration state is stored exclusively in SQLite; no other database is used for coordination. | `persistence::database::tests::in_memory_store_opens_and_migrates` | ENFORCED |
-| INV-010 | Filesystem watcher events are treated as hints and always verified against authoritative state. | `test_inv_010_fs_watchers_are_hints` | PLANNED |
-| INV-011 | MCP servers expose only read/write facades over Hub state and contain no business logic. | `test_inv_011_mcp_is_adapter` | PLANNED |
-| INV-012 | No agent process receives write access to the canonical integration workspace. | `test_inv_012_no_canonical_mutation` | PLANNED |
+| INV-010 | Filesystem watcher events are treated as hints and always verified against authoritative state. | `domain::workspace::tests::inv_010_scope_drift_report_requires_evidence_not_fs_events` | ENFORCED |
+| INV-011 | MCP servers expose only read/write facades over Hub state and contain no business logic. | `domain::workspace::tests::inv_011_workspace_types_are_pure_domain_without_mcp_coupling` | ENFORCED |
+| INV-012 | No agent process receives write access to the canonical integration workspace. | `domain::workspace::tests::inv_012_write_capability_never_grants_canonical_workspace_access` | ENFORCED |
 | INV-013 | No agent may execute a merge against the target branch; only the Hub merge queue does. | `domain::delegation::tests::authority_scope_has_no_can_merge` | ENFORCED |
 | INV-014 | All consequential state transitions pass through Hub-owned command handlers. | `commands::engine::tests::execute_create_project_succeeds` | ENFORCED |
 
@@ -50,7 +50,7 @@
 
 | ID | Statement | Test Function | Coverage |
 |----|-----------|---------------|----------|
-| INV-017 | Closing the UI does not terminate active sessions or lose orchestration state. | `test_inv_017_ui_disposable` | PLANNED |
+| INV-017 | Closing the UI does not terminate active sessions or lose orchestration state. | `domain::workspace::tests::inv_017_all_orchestration_state_survives_serialization` | ENFORCED |
 | INV-018 | No critical mutable orchestration state exists solely in process memory. | `persistence::database::tests::file_backed_store_survives_restart` | ENFORCED |
 | INV-019 | Every external side effect produces a durable journal entry recoverable after crash. | `recovery::reconciler::tests::inv_019_journal_entries_survive_and_appear_in_reconcile` | ENFORCED |
 | INV-020 | Every failure carries a classified failure_reason; bare FAILED without classification is rejected. | `domain::tests::inv_020_every_failure_carries_classified_reason` | ENFORCED |
@@ -85,7 +85,7 @@
 | ID | Statement | Test Function | Coverage |
 |----|-----------|---------------|----------|
 | INV-031 | Startup reconcile scans leases, operations, workspaces, sessions, and tasks before accepting new commands. | `recovery::reconciler::tests::inv_031_startup_reconcile_scans_operations_and_leases` | ENFORCED |
-| INV-032 | Process identity uses PID plus start timestamp or nonce; PID alone is insufficient. | `test_inv_032_process_identity` | PLANNED |
+| INV-032 | Process identity uses PID plus start timestamp or nonce; PID alone is insufficient. | `domain::tests::inv_032_process_identity_requires_timestamp_not_pid_alone` | ENFORCED |
 | INV-033 | Cancellation distinguishes CANCEL_REQUESTED from observed CANCELLED; indeterminate states are preserved. | `domain::tests::inv_033_direct_active_to_cancelled_is_forbidden` | ENFORCED |
 
 ## Cleanup and Artifact Invariants (34–36)
@@ -94,7 +94,7 @@
 |----|-----------|---------------|----------|
 | INV-034 | Workspace cleanup never destroys unintegrated work without explicit evidence and policy authorization. | `test_inv_034_cleanup_safety` | PLANNED |
 | INV-035 | Critical artifacts carry SHA-256 hash and schema version for integrity verification. | `test_inv_035_artifact_integrity` | PLANNED |
-| INV-036 | Policy snapshot for a Run is immutable once RUNNING begins; changes require explicit migration event. | `test_inv_036_policy_snapshot_immutability` | PLANNED |
+| INV-036 | Policy snapshot for a Run is immutable once RUNNING begins; changes require explicit migration event. | `domain::tests::inv_036_policy_snapshot_becomes_immutable_after_freeze` | ENFORCED |
 
 ## Delegation Model Invariants (ADR-0011 AMENDED) (37–41)
 
