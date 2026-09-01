@@ -1561,7 +1561,7 @@ mod tests {
 
     #[test]
     fn inv_036_policy_snapshot_serialization_preserves_frozen_state() {
-        let mut snapshot = PolicySnapshot {
+        let snapshot = PolicySnapshot {
             snapshot_id: "snap-3".to_string(),
             run_id: "run-3".to_string(),
             policy_schema_version: EntityVersion(5),

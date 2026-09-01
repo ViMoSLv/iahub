@@ -314,7 +314,7 @@ impl CleanupEvaluation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{EntityVersion, ProjectId, RunId};
+    use crate::domain::{ProjectId, RunId};
 
     // -- ID newtypes --
 
@@ -661,7 +661,7 @@ mod tests {
         };
         let report_json = serde_json::to_string(&report).unwrap();
         let report_back: ScopeDriftReport = serde_json::from_str(&report_json).unwrap();
-        assert_eq!(report_back.has_violations, true);
+        assert!(report_back.has_violations);
         assert_eq!(report_back.out_of_scope_files.len(), 1);
     }
 
