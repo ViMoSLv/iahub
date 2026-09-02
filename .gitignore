@@ -16,6 +16,7 @@ Thumbs.db
 *.db-wal
 *.db-shm
 .megabrain/
+.ia-hub/
 workspaces/
 
 # Environment / secrets
