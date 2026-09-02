@@ -5,5 +5,7 @@
 //! `domain` module never imports `rusqlite`.
 
 pub mod project;
+pub mod provider_account;
 
 pub use project::ProjectRepository;
+pub use provider_account::ProviderAccountRepository;
