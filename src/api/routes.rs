@@ -130,12 +130,40 @@ async fn spawn_session_handler(
 ) -> impl IntoResponse {
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    // Determine workspace path
-    let workspace_path = req.workspace_path.unwrap_or_else(|| {
+    // Determine workspace path — use provided path or current directory.
+    // If the path is a git repo, provision an isolated worktree for this session.
+    let base_workspace = req.workspace_path.unwrap_or_else(|| {
         std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string())
     });
+
+    // Attempt git worktree provisioning for isolated workspace per session.
+    // Falls back to the base path if not a git repo or worktree creation fails.
+    let workspace_path = {
+        let base = std::path::Path::new(&base_workspace);
+        let worktree_root = base.join(".ia-hub").join("attempts");
+        let manager = crate::git::WorktreeManager::new(base, &worktree_root);
+        match manager.provision_worktree(&session_id) {
+            Ok(info) => {
+                tracing::info!(
+                    session_id = %session_id,
+                    worktree = %info.worktree_path.display(),
+                    branch = %info.branch_name,
+                    "git worktree provisioned for session"
+                );
+                info.worktree_path.to_string_lossy().to_string()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %e,
+                    "worktree provisioning failed, using base workspace"
+                );
+                base_workspace.clone()
+            }
+        }
+    };
 
     // Determine the account_id for isolation — use provided account_id or
     // generate a unique per-session one. This ensures each session gets its
