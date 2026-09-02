@@ -6,9 +6,10 @@
   --sidebar-width: 260px;
   --header-height: 48px;
   --panel-gap: 6px;
-  --border-color: #2a2a3e;
-  --panel-bg: #12121f;
-  --panel-header-bg: #1a1a2e;
+  --border-color: #2a2a12;
+  --panel-bg: #0d0d0d;
+  --panel-header-bg: #1a1a0e;
+  --accent-color: #c8b400;
 }
 
 * {
@@ -61,7 +62,7 @@ html, body, #root {
 
 .resize-handle:hover,
 .resize-handle.active {
-  background: var(--accent-color, #e94560);
+  background: var(--accent-color, #c8b400);
   opacity: 0.6;
 }
 
