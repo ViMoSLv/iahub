@@ -1,3 +1,4 @@
+pub mod api;
 pub mod architecture;
 pub mod authority;
 pub mod commands;
