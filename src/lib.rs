@@ -5,6 +5,7 @@ pub mod commands;
 pub mod domain;
 pub mod invariants;
 pub mod operations;
+pub mod orchestrator;
 pub mod persistence;
 pub mod recovery;
 pub mod runtime;
