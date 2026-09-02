@@ -29,15 +29,16 @@ export default function App() {
     }
   }, [connected, health, phase]);
 
-  // Fallback: if connected but health hasn't arrived yet after 3s, go ready anyway
+  // Absolute fallback: force ready after 5s regardless of connection state.
+  // This prevents the "Connecting to backend..." screen from hanging forever
+  // when the backend is slow to start or the first fetch fails.
   useEffect(() => {
-    if (connected && phase === "loading") {
-      const timer = setTimeout(() => {
-        setPhase("ready");
-      }, 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [connected, phase]);
+    if (phase !== "loading") return;
+    const timer = setTimeout(() => {
+      setPhase("ready");
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [phase]);
 
   // Fetch agents on mount
   useEffect(() => {
