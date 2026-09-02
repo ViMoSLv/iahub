@@ -48,11 +48,18 @@ pub enum SessionEvent {
 }
 
 /// Metadata tracked per active session.
-struct SessionRecord {
-    pty_instance: Arc<PtyInstance>,
-    account_id: String,
-    #[allow(dead_code)]
-    agent_binary: String,
+pub struct SessionRecord {
+    pub pty_instance: Arc<PtyInstance>,
+    pub account_id: String,
+    pub agent_binary: String,
+}
+
+/// Public summary of a session for API responses.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub agent_binary: String,
+    pub account_id: String,
 }
 
 /// The Process Supervisor manages all active PTY sessions.
@@ -256,6 +263,19 @@ impl ProcessSupervisor {
     pub async fn list_session_ids(&self) -> Vec<String> {
         let sessions = self.sessions.read().await;
         sessions.keys().cloned().collect()
+    }
+
+    /// List all active sessions with their metadata.
+    pub async fn list_sessions(&self) -> Vec<SessionSummary> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .iter()
+            .map(|(id, record)| SessionSummary {
+                id: id.clone(),
+                agent_binary: record.agent_binary.clone(),
+                account_id: record.account_id.clone(),
+            })
+            .collect()
     }
 }
 

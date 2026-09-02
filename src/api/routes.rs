@@ -188,13 +188,13 @@ async fn spawn_session_handler(
 async fn list_sessions_handler(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let ids = state.ws_state.supervisor.list_session_ids().await;
-    let sessions: Vec<SessionListItem> = ids.into_iter().map(|id| {
+    let summaries = state.ws_state.supervisor.list_sessions().await;
+    let sessions: Vec<SessionListItem> = summaries.into_iter().map(|s| {
         SessionListItem {
-            id: id.clone(),
-            agent_binary: "unknown".to_string(),
-            account_id: "default".to_string(),
-            provider: "unknown".to_string(),
+            id: s.id,
+            agent_binary: s.agent_binary,
+            account_id: s.account_id,
+            provider: "local".to_string(),
             status: "active".to_string(),
         }
     }).collect();
