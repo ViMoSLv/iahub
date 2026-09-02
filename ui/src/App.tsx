@@ -164,6 +164,7 @@ export default function App() {
         sessionCount={sessions.length}
         connected={connected}
         agents={agents}
+        accounts={accounts}
         onSpawnSession={handleSpawnSession}
       />
       <div className="flex-1 flex overflow-hidden">
