@@ -14,7 +14,7 @@ export default function App() {
   const [layout, setLayout] = useState<LayoutMode>("grid");
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects] = useState<ProjectInfo[]>([]);
-  const [accounts] = useState<ProviderAccountInfo[]>([]);
+  const [accounts, setAccounts] = useState<ProviderAccountInfo[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [agents, setAgents] = useState<Array<{ name: string; binary: string; status: string }>>([]);
   const { connected, port, health } = useBackend();
@@ -55,6 +55,15 @@ export default function App() {
     poll();
     const interval = setInterval(poll, 3000);
     return () => clearInterval(interval);
+  }, [phase, baseUrl]);
+
+  // Fetch accounts on mount
+  useEffect(() => {
+    if (phase !== "ready") return;
+    fetch(`${baseUrl}/api/accounts`)
+      .then((r) => r.json())
+      .then((data) => setAccounts(data))
+      .catch(() => {});
   }, [phase, baseUrl]);
 
   const handleSpawnSession = useCallback(
