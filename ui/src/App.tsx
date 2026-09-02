@@ -77,12 +77,14 @@ export default function App() {
   }, [phase, baseUrl]);
 
   const handleSpawnSession = useCallback(
-    async (agentBinary: string) => {
+    async (agentBinary: string, accountId?: string) => {
       try {
+        const body: Record<string, string> = { agent_binary: agentBinary };
+        if (accountId) body.account_id = accountId;
         const resp = await fetch(`${baseUrl}/api/sessions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agent_binary: agentBinary }),
+          body: JSON.stringify(body),
         });
         if (resp.ok) {
           const data = await resp.json();
@@ -90,7 +92,7 @@ export default function App() {
             ...prev,
             {
               id: data.session_id,
-              account_id: "default",
+              account_id: accountId || "auto",
               provider: agentBinary,
               agent_binary: agentBinary,
               status: "active",

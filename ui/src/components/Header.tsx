@@ -13,7 +13,7 @@ interface HeaderProps {
   sessionCount: number;
   connected: boolean;
   agents: AgentInfo[];
-  onSpawnSession: (agentBinary: string) => void;
+  onSpawnSession: (agentBinary: string, accountId?: string) => void;
 }
 
 export function Header({ layout, onLayoutChange, sessionCount, connected, agents, onSpawnSession }: HeaderProps) {

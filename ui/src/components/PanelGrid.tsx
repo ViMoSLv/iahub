@@ -13,7 +13,7 @@ interface PanelGridProps {
   layout: LayoutMode;
   port: number;
   agents: AgentInfo[];
-  onSpawnSession: (agentBinary: string) => void;
+  onSpawnSession: (agentBinary: string, accountId?: string) => void;
 }
 
 export function PanelGrid({ sessions, layout, port, agents, onSpawnSession }: PanelGridProps) {
