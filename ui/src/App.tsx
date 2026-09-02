@@ -3,15 +3,18 @@ import { Sidebar } from "./components/Sidebar";
 import { PanelGrid } from "./components/PanelGrid";
 import { Header } from "./components/Header";
 import { Onboarding } from "./pages/Onboarding";
+import { OrchestratorView } from "./components/OrchestratorView";
 import { useBackend } from "./hooks/useBackend";
 import type { SessionInfo, ProjectInfo, ProviderAccountInfo } from "./lib/types";
 
 type LayoutMode = "grid" | "spotlight" | "sidebar";
 type AppPhase = "loading" | "onboarding" | "ready";
+type ActiveView = "terminals" | "orchestrator";
 
 export default function App() {
   const [phase, setPhase] = useState<AppPhase>("loading");
   const [layout, setLayout] = useState<LayoutMode>("grid");
+  const [activeView, setActiveView] = useState<ActiveView>("terminals");
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects] = useState<ProjectInfo[]>([]);
   const [accounts, setAccounts] = useState<ProviderAccountInfo[]>([]);
@@ -176,14 +179,44 @@ export default function App() {
           onProjectSelect={setActiveProjectId}
           onAddAccount={handleAddAccount}
         />
-        <main className="flex-1 overflow-hidden p-[var(--panel-gap)]">
-          <PanelGrid
-            sessions={sessions}
-            layout={layout}
-            port={port || 8080}
-            agents={agents}
-            onSpawnSession={handleSpawnSession}
-          />
+        <main className="flex-1 overflow-hidden flex flex-col">
+          {/* View switcher tabs */}
+          <div className="h-8 flex items-center px-2 gap-1 bg-surface-raised border-b border-[var(--border-color)] shrink-0">
+            <button
+              onClick={() => setActiveView("terminals")}
+              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                activeView === "terminals"
+                  ? "bg-accent/20 text-accent"
+                  : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              Terminals
+            </button>
+            <button
+              onClick={() => setActiveView("orchestrator")}
+              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                activeView === "orchestrator"
+                  ? "bg-accent/20 text-accent"
+                  : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              Orchestrator
+            </button>
+          </div>
+          {/* Active view content */}
+          <div className="flex-1 overflow-hidden p-[var(--panel-gap)]">
+            {activeView === "terminals" ? (
+              <PanelGrid
+                sessions={sessions}
+                layout={layout}
+                port={port || 8080}
+                agents={agents}
+                onSpawnSession={handleSpawnSession}
+              />
+            ) : (
+              <OrchestratorView port={port || 8080} />
+            )}
+          </div>
         </main>
       </div>
     </div>
