@@ -12,17 +12,20 @@ type AppPhase = "loading" | "onboarding" | "ready";
 export default function App() {
   const [phase, setPhase] = useState<AppPhase>("loading");
   const [layout, setLayout] = useState<LayoutMode>("grid");
-  const [sessions] = useState<SessionInfo[]>([]);
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects] = useState<ProjectInfo[]>([]);
   const [accounts] = useState<ProviderAccountInfo[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [agents, setAgents] = useState<Array<{ name: string; binary: string; status: string }>>([]);
   const { connected, port } = useBackend();
+
+  const baseUrl = `http://127.0.0.1:${port || 8080}`;
 
   // Poll health until backend is ready
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
-        const resp = await fetch(`http://127.0.0.1:${port || 8080}/health`);
+        const resp = await fetch(`${baseUrl}/health`);
         if (resp.ok) {
           const data: HealthResponse = await resp.json();
           if (data.status === "ready") {
@@ -35,7 +38,64 @@ export default function App() {
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [port]);
+  }, [baseUrl]);
+
+  // Fetch agents on mount
+  useEffect(() => {
+    if (phase !== "ready") return;
+    fetch(`${baseUrl}/api/agents`)
+      .then((r) => r.json())
+      .then((data) => setAgents(data))
+      .catch(() => {});
+  }, [phase, baseUrl]);
+
+  // Poll sessions every 3s
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const poll = async () => {
+      try {
+        const resp = await fetch(`${baseUrl}/api/sessions`);
+        if (resp.ok) {
+          const data = await resp.json();
+          setSessions(data);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 3000);
+    return () => clearInterval(interval);
+  }, [phase, baseUrl]);
+
+  const handleSpawnSession = useCallback(
+    async (agentBinary: string) => {
+      try {
+        const resp = await fetch(`${baseUrl}/api/sessions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent_binary: agentBinary }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          setSessions((prev) => [
+            ...prev,
+            {
+              id: data.session_id,
+              account_id: "default",
+              provider: agentBinary,
+              agent_binary: agentBinary,
+              status: "active",
+              workspace_path: data.workspace_path,
+            },
+          ]);
+        }
+      } catch {
+        // ignore
+      }
+    },
+    [baseUrl],
+  );
 
   const handleOnboardingComplete = useCallback(() => {
     setPhase("ready");
@@ -64,6 +124,8 @@ export default function App() {
         onLayoutChange={setLayout}
         sessionCount={sessions.length}
         connected={connected}
+        agents={agents}
+        onSpawnSession={handleSpawnSession}
       />
       <div className="flex-1 flex overflow-hidden">
         <Sidebar
@@ -77,6 +139,8 @@ export default function App() {
             sessions={sessions}
             layout={layout}
             port={port || 8080}
+            agents={agents}
+            onSpawnSession={handleSpawnSession}
           />
         </main>
       </div>
