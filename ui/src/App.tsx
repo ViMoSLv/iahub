@@ -4,7 +4,7 @@ import { PanelGrid } from "./components/PanelGrid";
 import { Header } from "./components/Header";
 import { Onboarding } from "./pages/Onboarding";
 import { useBackend } from "./hooks/useBackend";
-import type { HealthResponse, SessionInfo, ProjectInfo, ProviderAccountInfo } from "./lib/types";
+import type { SessionInfo, ProjectInfo, ProviderAccountInfo } from "./lib/types";
 
 type LayoutMode = "grid" | "spotlight" | "sidebar";
 type AppPhase = "loading" | "onboarding" | "ready";
@@ -17,33 +17,17 @@ export default function App() {
   const [accounts] = useState<ProviderAccountInfo[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [agents, setAgents] = useState<Array<{ name: string; binary: string; status: string }>>([]);
-  const { connected, port } = useBackend();
+  const { connected, port, health } = useBackend();
 
   const backendPort = port || 8080;
   const baseUrl = `http://127.0.0.1:${backendPort}`;
 
-  // Poll health until backend is ready
+  // Transition from loading → ready when useBackend confirms connection
   useEffect(() => {
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const resp = await fetch(`http://127.0.0.1:${backendPort}/health`);
-        if (cancelled) return;
-        if (resp.ok) {
-          const data: HealthResponse = await resp.json();
-          if (data.status === "ready") {
-            setPhase(data.onboarding_required ? "onboarding" : "ready");
-            return; // stop polling
-          }
-        }
-      } catch {
-        // Backend not ready yet
-      }
-      if (!cancelled) setTimeout(poll, 2000);
-    };
-    poll();
-    return () => { cancelled = true; };
-  }, [backendPort]);
+    if (connected && phase === "loading") {
+      setPhase(health?.onboarding_required ? "onboarding" : "ready");
+    }
+  }, [connected, health, phase]);
 
   // Fetch agents on mount
   useEffect(() => {
