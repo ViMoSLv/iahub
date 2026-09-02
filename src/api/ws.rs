@@ -126,13 +126,13 @@ pub async fn handle_session_socket(
             tokio::select! {
                 // Replay data has priority — drain it first on reconnect
                 Some(replay_bytes) = rx_replay.recv() => {
-                    if ws_sender.send(Message::Binary(replay_bytes.into())).await.is_err() {
+                    if ws_sender.send(Message::Binary(replay_bytes)).await.is_err() {
                         break;
                     }
                 }
                 // Live PTY output
                 Some(bytes) = rx_pty_to_ws.recv() => {
-                    if ws_sender.send(Message::Binary(bytes.into())).await.is_err() {
+                    if ws_sender.send(Message::Binary(bytes)).await.is_err() {
                         break;
                     }
                 }
