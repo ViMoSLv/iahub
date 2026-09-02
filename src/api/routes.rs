@@ -7,7 +7,7 @@ use axum::{
     extract::{State, WebSocketUpgrade},
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{delete, get},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/api/sessions", get(list_sessions_handler).post(spawn_session_handler))
+        .route("/api/sessions/:id", delete(delete_session_handler))
         .route("/api/agents", get(list_agents_handler))
         .route("/api/accounts", get(list_accounts_handler).post(create_account_handler))
         .route("/api/orchestrate", axum::routing::post(orchestrate_handler))
@@ -252,6 +253,28 @@ async fn list_sessions_handler(
     }).collect();
 
     (StatusCode::OK, Json(sessions))
+}
+
+/// DELETE /api/sessions/:id — terminate a running session (P0-3).
+async fn delete_session_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.ws_state.supervisor.terminate_session(&session_id).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "terminated",
+                "session_id": session_id,
+            })),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": e,
+            })),
+        ),
+    }
 }
 
 /// GET /api/agents — list discovered agent binaries.

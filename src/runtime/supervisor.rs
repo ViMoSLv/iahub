@@ -277,6 +277,43 @@ impl ProcessSupervisor {
             })
             .collect()
     }
+
+    /// Terminate a single session by ID (P0-3: DELETE /api/sessions/:id).
+    /// Sends terminate signal, waits briefly, then removes from registry.
+    pub async fn terminate_session(&self, session_id: &str) -> Result<(), String> {
+        let pty = {
+            let sessions = self.sessions.read().await;
+            sessions.get(session_id).map(|r| r.pty_instance.clone())
+        };
+
+        match pty {
+            Some(pty_instance) => {
+                // Send terminate signal
+                let _ = pty_instance.terminate();
+
+                // Brief wait for graceful exit
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+                // Force kill if still alive
+                if let Ok(None) = pty_instance.try_wait() {
+                    let _ = pty_instance.terminate();
+                }
+
+                // Remove from registry
+                self.remove_session(session_id).await;
+
+                // Emit termination event
+                let event = SessionEvent::SessionTerminated {
+                    session_id: session_id.to_string(),
+                    reason: "terminated via API".to_string(),
+                };
+                let _ = self.event_tx.send(event).await;
+
+                Ok(())
+            }
+            None => Err(format!("session {} not found", session_id)),
+        }
+    }
 }
 
 #[cfg(test)]
