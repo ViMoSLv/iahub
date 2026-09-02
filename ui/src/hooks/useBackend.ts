@@ -12,7 +12,7 @@ interface BackendState {
 export function useBackend(): BackendState {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [connected, setConnected] = useState(false);
-  const [port, setPort] = useState<number | null>(null);
+  const [port, setPort] = useState<number | null>(8080);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const connect = useCallback((p: number) => {
