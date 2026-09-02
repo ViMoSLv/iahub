@@ -48,7 +48,7 @@ export function useBackend(): BackendState {
     };
 
     poll();
-    intervalRef.current = setInterval(poll, 5000);
+    intervalRef.current = setInterval(poll, 2000);
 
     return () => {
       if (intervalRef.current) {
