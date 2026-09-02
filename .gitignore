@@ -24,4 +24,4 @@ workspaces/
 
 # Node / frontend deps (if UI added later)
 node_modules/
-dist/
+dist/.ia-hub/
