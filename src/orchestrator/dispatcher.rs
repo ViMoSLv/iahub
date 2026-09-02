@@ -98,17 +98,19 @@ impl SessionDispatcher {
         }
 
         // Check if the only reason is INV-006 constraint
-        if role == AgentRole::Reviewer && coder_account.is_some() {
-            let all_at_capacity_or_self = self.accounts.iter().all(|a| {
-                !a.available
-                    || a.active_sessions >= a.max_concurrent as usize
-                    || a.account_id == coder_account.unwrap()
-            });
-            if all_at_capacity_or_self {
-                return Err(DispatchError::SelfReviewViolation {
-                    coder_account: coder_account.unwrap().to_string(),
-                    reviewer_account: "no other account available".to_string(),
+        if let Some(coder) = coder_account {
+            if role == AgentRole::Reviewer {
+                let all_at_capacity_or_self = self.accounts.iter().all(|a| {
+                    !a.available
+                        || a.active_sessions >= a.max_concurrent as usize
+                        || a.account_id == coder
                 });
+                if all_at_capacity_or_self {
+                    return Err(DispatchError::SelfReviewViolation {
+                        coder_account: coder.to_string(),
+                        reviewer_account: "no other account available".to_string(),
+                    });
+                }
             }
         }
 

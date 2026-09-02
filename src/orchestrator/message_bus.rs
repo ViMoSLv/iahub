@@ -284,7 +284,7 @@ mod tests {
         // Bus only stores messages — it has no method to mutate Tasks or Attempts
         // This is a structural guarantee: MessageBus has no access to domain state
         assert_eq!(bus.len(), 1);
-        assert!(bus.is_empty() == false);
+        assert!(!bus.is_empty());
     }
 
     #[test]
