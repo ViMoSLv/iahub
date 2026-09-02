@@ -1,61 +1,54 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { HealthResponse } from "../lib/types";
 
 interface BackendState {
   health: HealthResponse | null;
   connected: boolean;
-  port: number | null;
-  connect: (port: number) => void;
-  disconnect: () => void;
+  port: number;
 }
+
+const BACKEND_PORT = 8080;
+const POLL_INTERVAL_MS = 1500;
 
 export function useBackend(): BackendState {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [connected, setConnected] = useState(false);
-  const [port, setPort] = useState<number | null>(8080);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const connect = useCallback((p: number) => {
-    setPort(p);
-    setConnected(true);
-  }, []);
-
-  const disconnect = useCallback(() => {
-    setConnected(false);
-    setHealth(null);
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-  }, []);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    if (!port) return;
+    mountedRef.current = true;
 
     const poll = async () => {
       try {
-        const resp = await fetch(`http://127.0.0.1:${port}/health`);
+        const resp = await fetch(`http://127.0.0.1:${BACKEND_PORT}/health`, {
+          signal: AbortSignal.timeout(3000),
+        });
+        if (!mountedRef.current) return;
         if (resp.ok) {
           const data: HealthResponse = await resp.json();
+          if (!mountedRef.current) return;
           setHealth(data);
           setConnected(true);
         } else {
           setConnected(false);
         }
       } catch {
+        if (!mountedRef.current) return;
         setConnected(false);
       }
     };
 
+    // Immediate first attempt
     poll();
-    intervalRef.current = setInterval(poll, 2000);
+
+    // Then poll at interval
+    const interval = setInterval(poll, POLL_INTERVAL_MS);
 
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
+      mountedRef.current = false;
+      clearInterval(interval);
     };
-  }, [port]);
+  }, []);
 
-  return { health, connected, port, connect, disconnect };
+  return { health, connected, port: BACKEND_PORT };
 }
