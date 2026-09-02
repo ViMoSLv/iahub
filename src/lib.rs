@@ -1,8 +1,11 @@
+pub mod adapters;
 pub mod api;
 pub mod architecture;
 pub mod authority;
 pub mod commands;
+pub mod credentials;
 pub mod domain;
+pub mod git;
 pub mod invariants;
 pub mod operations;
 pub mod orchestrator;
