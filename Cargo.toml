@@ -36,6 +36,27 @@ sha2 = "0.10"
 # CLI (will be used in Topic 10, but scaffold now)
 clap = { version = "4", features = ["derive"] }
 
+# PTY / pseudo-terminal (cross-platform: ConPTY on Windows, POSIX PTY on Unix)
+portable-pty = "0.8"
+
+# Async trait support for AgentRuntimeAdapter
+async-trait = "0.1"
+
+# Futures utilities for output streams
+futures = "0.3"
+
+# HTTP/WebSocket server (Phase 1)
+axum = { version = "0.7", features = ["ws"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+tokio-tungstenite = "0.21"
+
+# OS keychain integration for credential store
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
+
+# Directories for XDG/platform-specific paths
+dirs = "5"
+
 [dev-dependencies]
 tempfile = "3"
 assert_matches = "1"

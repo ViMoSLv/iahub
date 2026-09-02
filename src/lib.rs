@@ -6,6 +6,7 @@ pub mod invariants;
 pub mod operations;
 pub mod persistence;
 pub mod recovery;
+pub mod runtime;
 
 pub use architecture::*;
 pub use commands::*;
