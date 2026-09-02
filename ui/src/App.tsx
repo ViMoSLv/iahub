@@ -105,6 +105,35 @@ export default function App() {
     [baseUrl],
   );
 
+  const handleAddAccount = useCallback(
+    async (provider: string, label: string) => {
+      try {
+        const resp = await fetch(`${baseUrl}/api/accounts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider, label }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          setAccounts((prev) => [
+            ...prev,
+            {
+              id: data.id,
+              provider: data.provider,
+              label: data.label,
+              status: data.status,
+              max_concurrent_sessions: data.max_concurrent_sessions,
+              active_sessions: data.active_sessions,
+            },
+          ]);
+        }
+      } catch {
+        // ignore
+      }
+    },
+    [baseUrl],
+  );
+
   const handleOnboardingComplete = useCallback(() => {
     setPhase("ready");
   }, []);
@@ -141,6 +170,7 @@ export default function App() {
           accounts={accounts}
           activeProjectId={activeProjectId}
           onProjectSelect={setActiveProjectId}
+          onAddAccount={handleAddAccount}
         />
         <main className="flex-1 overflow-hidden p-[var(--panel-gap)]">
           <PanelGrid

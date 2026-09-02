@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ProjectInfo, ProviderAccountInfo } from "../lib/types";
 
 interface SidebarProps {
@@ -5,9 +6,21 @@ interface SidebarProps {
   accounts: ProviderAccountInfo[];
   activeProjectId: string | null;
   onProjectSelect: (id: string | null) => void;
+  onAddAccount?: (provider: string, label: string) => void;
 }
 
-export function Sidebar({ projects, accounts, activeProjectId, onProjectSelect }: SidebarProps) {
+export function Sidebar({ projects, accounts, activeProjectId, onProjectSelect, onAddAccount }: SidebarProps) {
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newProvider, setNewProvider] = useState("claude");
+  const [newLabel, setNewLabel] = useState("");
+
+  const handleAdd = () => {
+    if (!newLabel.trim() || !onAddAccount) return;
+    onAddAccount(newProvider, newLabel.trim());
+    setNewLabel("");
+    setShowAddForm(false);
+  };
+
   return (
     <aside className="w-[var(--sidebar-width)] bg-surface-raised border-r border-[var(--border-color)] flex flex-col shrink-0 overflow-hidden">
       {/* Projects section */}
@@ -49,10 +62,60 @@ export function Sidebar({ projects, accounts, activeProjectId, onProjectSelect }
 
         {/* Accounts section */}
         <div className="mt-6">
-          <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 px-1">
-            Contas
+          <div className="flex items-center justify-between mb-2 px-1">
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+              Contas
+            </div>
+            {onAddAccount && (
+              <button
+                onClick={() => setShowAddForm(!showAddForm)}
+                className="text-accent text-xs hover:text-accent/80 transition-colors"
+              >
+                + Add
+              </button>
+            )}
           </div>
-          {accounts.length === 0 ? (
+
+          {/* Add account form */}
+          {showAddForm && (
+            <div className="px-2 py-2 mb-2 bg-surface rounded-lg border border-[var(--border-color)] space-y-2">
+              <select
+                value={newProvider}
+                onChange={(e) => setNewProvider(e.target.value)}
+                className="w-full px-2 py-1 bg-surface-raised border border-[var(--border-color)] rounded text-xs text-gray-200 focus:outline-none focus:border-accent"
+              >
+                <option value="claude">Claude Code</option>
+                <option value="antigravity">Antigravity</option>
+                <option value="codex">Codex</option>
+                <option value="opencode">OpenCode</option>
+              </select>
+              <input
+                type="text"
+                value={newLabel}
+                onChange={(e) => setNewLabel(e.target.value)}
+                placeholder="Minha conta A"
+                className="w-full px-2 py-1 bg-surface-raised border border-[var(--border-color)] rounded text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-accent"
+                onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+              />
+              <div className="flex gap-1">
+                <button
+                  onClick={handleAdd}
+                  disabled={!newLabel.trim()}
+                  className="flex-1 py-1 bg-accent/20 text-accent rounded text-xs hover:bg-accent/30 disabled:opacity-50 transition-colors"
+                >
+                  Salvar
+                </button>
+                <button
+                  onClick={() => setShowAddForm(false)}
+                  className="flex-1 py-1 text-gray-500 rounded text-xs hover:text-gray-300 transition-colors"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          )}
+
+          {accounts.length === 0 && !showAddForm ? (
             <div className="px-2 py-2 text-gray-500 text-xs">
               Nenhuma conta configurada
             </div>
