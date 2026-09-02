@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use tower_http::cors::{Any, CorsLayer};
+
 use super::routes::{build_router, AppState};
 use super::ws::WsState;
 use crate::runtime::supervisor::ProcessSupervisor;
@@ -52,7 +54,12 @@ impl ApiServer {
             schema_version: 7, // current schema version
         });
 
-        let router = build_router(app_state);
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any);
+
+        let router = build_router(app_state).layer(cors);
 
         // Dynamic port discovery (Gap 13)
         let lock_path = Self::lock_file_path();
