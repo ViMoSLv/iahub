@@ -69,12 +69,16 @@ pub async fn handle_session_socket(
 
     // Channel for PTY output → WebSocket
     let (tx_pty_to_ws, mut rx_pty_to_ws) = mpsc::channel::<Vec<u8>>(2048);
+    // Separate channel for reconnect replay data (higher priority)
+    let (tx_replay, mut rx_replay) = mpsc::channel::<Vec<u8>>(64);
+
+    // Shared offset for reconnect replay — updated by read_task, read by recv_task
+    let shared_offset = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     // Spawn a task to read from PTY scrollback and forward new data
-    // For now, we use a polling approach — in production this would be
-    // event-driven from the PTY read loop
     let pty_for_read = pty_instance.clone();
     let session_id_clone = session_id.clone();
+    let shared_offset_for_read = shared_offset.clone();
     let read_task = tokio::spawn(async move {
         let mut last_offset: u64 = 0;
         loop {
@@ -90,6 +94,7 @@ pub async fn handle_session_socket(
                 if current_total > last_offset {
                     let data = sb.read_from(last_offset);
                     last_offset = current_total;
+                    shared_offset_for_read.store(last_offset, std::sync::atomic::Ordering::SeqCst);
                     Some(data)
                 } else {
                     None
@@ -101,18 +106,37 @@ pub async fn handle_session_socket(
                 }
             }
             // Check if process exited
-            if let Ok(Some(_exit_code)) = pty_for_read.try_wait() {
+            if let Ok(Some(exit_code)) = pty_for_read.try_wait() {
+                // Send exit notification as JSON text frame
+                let exit_msg = serde_json::json!({
+                    "type": "agent_exit",
+                    "session_id": session_id_clone,
+                    "exit_code": exit_code,
+                    "message": format!("Agent process exited with code {}", exit_code)
+                });
+                let _ = tx_pty_to_ws.send(exit_msg.to_string().into_bytes()).await;
                 break;
             }
-            let _ = &session_id_clone; // keep alive
         }
     });
 
-    // SEND TASK: PTY output → WebSocket binary frames
+    // SEND TASK: merges replay channel (priority) + live PTY output → WebSocket binary frames
     let mut send_task = tokio::spawn(async move {
-        while let Some(bytes) = rx_pty_to_ws.recv().await {
-            if ws_sender.send(Message::Binary(bytes)).await.is_err() {
-                break;
+        loop {
+            tokio::select! {
+                // Replay data has priority — drain it first on reconnect
+                Some(replay_bytes) = rx_replay.recv() => {
+                    if ws_sender.send(Message::Binary(replay_bytes.into())).await.is_err() {
+                        break;
+                    }
+                }
+                // Live PTY output
+                Some(bytes) = rx_pty_to_ws.recv() => {
+                    if ws_sender.send(Message::Binary(bytes.into())).await.is_err() {
+                        break;
+                    }
+                }
+                else => break,
             }
         }
     });
@@ -120,6 +144,7 @@ pub async fn handle_session_socket(
     // RECEIVE TASK: WebSocket → PTY input or control commands
     let pty_for_input = pty_instance.clone();
     let supervisor_for_ctrl = state.supervisor.clone();
+    let tx_replay_for_recv = tx_replay.clone();
     let mut recv_task = tokio::spawn(async move {
         use futures::StreamExt;
         while let Some(msg) = ws_receiver.next().await {
@@ -143,10 +168,10 @@ pub async fn handle_session_socket(
                                 }
                             }
                             ControlCommand::Reconnect { session_id: sid, last_byte_offset } => {
-                                // Replay scrollback from the requested offset
+                                // Replay scrollback from the requested offset via replay channel
                                 if let Some(pty) = supervisor_for_ctrl.get_pty_instance(&sid).await {
-                                    let scrollback = pty.scrollback();
                                     let replay_data = {
+                                        let scrollback = pty.scrollback();
                                         let sb = match scrollback.lock() {
                                             Ok(s) => s,
                                             Err(_) => continue,
@@ -158,8 +183,14 @@ pub async fn handle_session_socket(
                                             session_id = %sid,
                                             bytes = replay_data.len(),
                                             from_offset = last_byte_offset,
-                                            "scrollback replay requested"
+                                            "scrollback replay sent"
                                         );
+                                        // Chunk large replays to avoid blocking
+                                        for chunk in replay_data.chunks(32 * 1024) {
+                                            if tx_replay_for_recv.send(chunk.to_vec()).await.is_err() {
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
                             }
