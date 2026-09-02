@@ -29,6 +29,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/health", get(health_handler))
         .route("/api/sessions", get(list_sessions_handler).post(spawn_session_handler))
         .route("/api/agents", get(list_agents_handler))
+        .route("/api/accounts", get(list_accounts_handler).post(create_account_handler))
         .route("/ws/session/:id", get(ws_upgrade_handler))
         .with_state(state)
 }
@@ -243,6 +244,99 @@ async fn list_agents_handler() -> impl IntoResponse {
                 "status": "version_unknown",
                 "capabilities": a.capabilities,
             }),
+        }
+    }).collect();
+
+    (StatusCode::OK, Json(result))
+}
+
+// ── Provider Account endpoints ─────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct CreateAccountRequest {
+    provider: String,
+    label: String,
+    #[serde(default)]
+    identity_hint: Option<String>,
+    #[serde(default = "default_max_concurrent")]
+    max_concurrent_sessions: u32,
+}
+
+fn default_max_concurrent() -> u32 { 2 }
+
+#[derive(Debug, Serialize)]
+struct AccountResponse {
+    id: String,
+    provider: String,
+    label: String,
+    status: String,
+    max_concurrent_sessions: u32,
+    active_sessions: usize,
+}
+
+/// In-memory account registry for MVP — will be backed by SQLite in production.
+use std::sync::{Mutex, LazyLock};
+
+#[derive(Debug, Clone)]
+struct StoredAccount {
+    id: String,
+    provider: String,
+    label: String,
+    #[allow(dead_code)]
+    identity_hint: Option<String>,
+    max_concurrent_sessions: u32,
+}
+
+static ACCOUNTS: LazyLock<Mutex<Vec<StoredAccount>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// POST /api/accounts — register a new ProviderAccount.
+async fn create_account_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateAccountRequest>,
+) -> impl IntoResponse {
+    let account_id = uuid::Uuid::new_v4().to_string();
+    let account = StoredAccount {
+        id: account_id.clone(),
+        provider: req.provider.clone(),
+        label: req.label.clone(),
+        identity_hint: req.identity_hint,
+        max_concurrent_sessions: req.max_concurrent_sessions,
+    };
+
+    // Register concurrency limit with supervisor
+    state.ws_state.supervisor.set_account_limit(&account_id, req.max_concurrent_sessions).await;
+
+    // Store in registry
+    {
+        let mut accounts = ACCOUNTS.lock().unwrap();
+        accounts.push(account);
+    }
+
+    let resp = AccountResponse {
+        id: account_id,
+        provider: req.provider,
+        label: req.label,
+        status: "active".to_string(),
+        max_concurrent_sessions: req.max_concurrent_sessions,
+        active_sessions: 0,
+    };
+
+    (StatusCode::CREATED, Json(resp))
+}
+
+/// GET /api/accounts — list all registered ProviderAccounts.
+async fn list_accounts_handler(
+    State(_state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let accounts = ACCOUNTS.lock().unwrap().clone();
+    let result: Vec<AccountResponse> = accounts.into_iter().map(|a| {
+        AccountResponse {
+            id: a.id.clone(),
+            provider: a.provider,
+            label: a.label,
+            status: "active".to_string(),
+            max_concurrent_sessions: a.max_concurrent_sessions,
+            active_sessions: 0, // TODO: query supervisor for real count
         }
     }).collect();
 
