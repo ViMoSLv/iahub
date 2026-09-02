@@ -100,6 +100,10 @@ struct SpawnSessionRequest {
     #[serde(default)]
     #[allow(dead_code)]
     label: Option<String>,
+    /// ProviderAccount ID to bind this session to for isolation.
+    /// If omitted, a unique per-session account is generated.
+    #[serde(default)]
+    account_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,12 +137,19 @@ async fn spawn_session_handler(
             .unwrap_or_else(|_| ".".to_string())
     });
 
-    // Build isolation environment
+    // Determine the account_id for isolation — use provided account_id or
+    // generate a unique per-session one. This ensures each session gets its
+    // own IsolationBoundary directory tree, never sharing with others.
+    let effective_account_id = req.account_id.unwrap_or_else(|| {
+        format!("session-{}", uuid::Uuid::new_v4())
+    });
+
+    // Build isolation environment bound to the account_id (not session_id)
     let base_data_dir = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("iahub")
         .join("accounts");
-    let boundary = crate::runtime::IsolationBoundary::new(&session_id, &base_data_dir);
+    let boundary = crate::runtime::IsolationBoundary::new(&effective_account_id, &base_data_dir);
     let _ = boundary.provision();
     let env_vars = boundary.generate_env_map();
 
@@ -160,10 +171,10 @@ async fn spawn_session_handler(
         Ok(pty_instance) => {
             let pty_arc = Arc::new(pty_instance);
 
-            // Register with supervisor
+            // Register with supervisor using the effective account_id
             let register_result = state.ws_state.supervisor.register_session(
                 &session_id,
-                "default",
+                &effective_account_id,
                 &req.agent_binary,
                 pty_arc,
             ).await;
