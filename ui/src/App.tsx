@@ -19,26 +19,31 @@ export default function App() {
   const [agents, setAgents] = useState<Array<{ name: string; binary: string; status: string }>>([]);
   const { connected, port } = useBackend();
 
-  const baseUrl = `http://127.0.0.1:${port || 8080}`;
+  const backendPort = port || 8080;
+  const baseUrl = `http://127.0.0.1:${backendPort}`;
 
   // Poll health until backend is ready
   useEffect(() => {
-    const interval = setInterval(async () => {
+    let cancelled = false;
+    const poll = async () => {
       try {
-        const resp = await fetch(`${baseUrl}/health`);
+        const resp = await fetch(`http://127.0.0.1:${backendPort}/health`);
+        if (cancelled) return;
         if (resp.ok) {
           const data: HealthResponse = await resp.json();
           if (data.status === "ready") {
             setPhase(data.onboarding_required ? "onboarding" : "ready");
-            clearInterval(interval);
+            return; // stop polling
           }
         }
       } catch {
         // Backend not ready yet
       }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [baseUrl]);
+      if (!cancelled) setTimeout(poll, 2000);
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [backendPort]);
 
   // Fetch agents on mount
   useEffect(() => {
