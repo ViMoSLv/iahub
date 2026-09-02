@@ -30,6 +30,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions", get(list_sessions_handler).post(spawn_session_handler))
         .route("/api/agents", get(list_agents_handler))
         .route("/api/accounts", get(list_accounts_handler).post(create_account_handler))
+        .route("/api/orchestrate", axum::routing::post(orchestrate_handler))
         .route("/ws/session/:id", get(ws_upgrade_handler))
         .with_state(state)
 }
@@ -378,6 +379,118 @@ async fn list_accounts_handler(
             active_sessions: 0, // TODO: query supervisor for real count
         }
     }).collect();
+
+    (StatusCode::OK, Json(result))
+}
+
+// ── Orchestrator endpoint ──────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct OrchestrateRequest {
+    /// The user objective to decompose into tasks.
+    objective: String,
+    /// Optional custom roles (defaults to scout → coder → tester → reviewer).
+    #[serde(default)]
+    roles: Option<Vec<String>>,
+}
+
+/// POST /api/orchestrate — decompose an objective into tasks with account assignments.
+async fn orchestrate_handler(
+    State(_state): State<Arc<AppState>>,
+    Json(req): Json<OrchestrateRequest>,
+) -> impl IntoResponse {
+    use crate::orchestrator::{TaskDecomposer, SessionDispatcher};
+    use crate::orchestrator::dispatcher::AccountSlot;
+
+    // Decompose the objective into subtasks
+    let tasks = if let Some(role_names) = &req.roles {
+        let roles: Vec<crate::orchestrator::decomposer::AgentRole> = role_names
+            .iter()
+            .filter_map(|r| match r.as_str() {
+                "scout" => Some(crate::orchestrator::decomposer::AgentRole::Scout),
+                "coder" => Some(crate::orchestrator::decomposer::AgentRole::Coder),
+                "tester" => Some(crate::orchestrator::decomposer::AgentRole::Tester),
+                "reviewer" => Some(crate::orchestrator::decomposer::AgentRole::Reviewer),
+                "shell" => Some(crate::orchestrator::decomposer::AgentRole::Shell),
+                _ => None,
+            })
+            .collect();
+        if roles.is_empty() {
+            TaskDecomposer::decompose(&req.objective)
+        } else {
+            TaskDecomposer::decompose_with_roles(&req.objective, &roles)
+        }
+    } else {
+        TaskDecomposer::decompose(&req.objective)
+    };
+
+    // Build account slots from registered accounts
+    let accounts = ACCOUNTS.lock().unwrap().clone();
+    let slots: Vec<AccountSlot> = accounts.iter().map(|a| AccountSlot {
+        account_id: a.id.clone(),
+        provider: a.provider.clone(),
+        max_concurrent: a.max_concurrent_sessions,
+        active_sessions: 0, // TODO: query real count from supervisor
+        available: true,
+    }).collect();
+
+    // Attempt dispatch
+    let result = if slots.is_empty() {
+        // No accounts registered — return tasks without assignments
+        let task_list: Vec<serde_json::Value> = tasks.iter().map(|t| serde_json::json!({
+            "order": t.order,
+            "role": t.role.to_string(),
+            "description": t.description,
+            "parallelizable": t.parallelizable,
+            "depends_on": t.depends_on,
+            "account_id": null,
+            "provider": null,
+        })).collect();
+        serde_json::json!({
+            "objective": req.objective,
+            "tasks": task_list,
+            "assignments": [],
+            "warning": "No ProviderAccounts registered. Add accounts via POST /api/accounts first.",
+        })
+    } else {
+        let dispatcher = SessionDispatcher::new(slots);
+        match dispatcher.dispatch(&tasks) {
+            Ok(assignments) => {
+                let task_list: Vec<serde_json::Value> = assignments.iter().map(|a| serde_json::json!({
+                    "order": a.task.order,
+                    "role": a.task.role.to_string(),
+                    "description": a.task.description,
+                    "parallelizable": a.task.parallelizable,
+                    "depends_on": a.task.depends_on,
+                    "account_id": a.account_id,
+                    "provider": a.provider,
+                })).collect();
+                serde_json::json!({
+                    "objective": req.objective,
+                    "tasks": task_list,
+                    "assignments": task_list,
+                })
+            }
+            Err(e) => {
+                // Dispatch failed — return tasks without assignments + error
+                let task_list: Vec<serde_json::Value> = tasks.iter().map(|t| serde_json::json!({
+                    "order": t.order,
+                    "role": t.role.to_string(),
+                    "description": t.description,
+                    "parallelizable": t.parallelizable,
+                    "depends_on": t.depends_on,
+                    "account_id": null,
+                    "provider": null,
+                })).collect();
+                serde_json::json!({
+                    "objective": req.objective,
+                    "tasks": task_list,
+                    "assignments": [],
+                    "error": format!("{:?}", e),
+                })
+            }
+        }
+    };
 
     (StatusCode::OK, Json(result))
 }
