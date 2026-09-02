@@ -29,6 +29,16 @@ export default function App() {
     }
   }, [connected, health, phase]);
 
+  // Fallback: if connected but health hasn't arrived yet after 3s, go ready anyway
+  useEffect(() => {
+    if (connected && phase === "loading") {
+      const timer = setTimeout(() => {
+        setPhase("ready");
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [connected, phase]);
+
   // Fetch agents on mount
   useEffect(() => {
     if (phase !== "ready") return;
