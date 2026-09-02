@@ -32,14 +32,12 @@ export default function App() {
     }
   }, [connected, health, phase]);
 
-  // Absolute fallback: force ready after 5s regardless of connection state.
-  // This prevents the "Connecting to backend..." screen from hanging forever
-  // when the backend is slow to start or the first fetch fails.
+  // Absolute fallback: force ready after 2s regardless of connection state.
   useEffect(() => {
     if (phase !== "loading") return;
     const timer = setTimeout(() => {
       setPhase("ready");
-    }, 5000);
+    }, 2000);
     return () => clearTimeout(timer);
   }, [phase]);
 
@@ -151,6 +149,12 @@ export default function App() {
           <div className="text-2xl font-bold text-accent mb-2">IA-Hub</div>
           <div className="text-status-idle text-sm">Connecting to backend...</div>
           <div className="mt-4 w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin mx-auto" />
+          <button
+            onClick={() => setPhase("ready")}
+            className="mt-6 px-4 py-1.5 text-xs text-gray-500 hover:text-gray-300 border border-[var(--border-color)] rounded-lg hover:border-gray-500 transition-colors"
+          >
+            Skip → Enter Panel
+          </button>
         </div>
       </div>
     );
