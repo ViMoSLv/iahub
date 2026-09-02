@@ -140,13 +140,13 @@ async fn spawn_session_handler(
             .unwrap_or_else(|_| ".".to_string())
     });
 
-    // Attempt git worktree provisioning for isolated workspace per session.
+    // Attempt git worktree provisioning for isolated workspace per session (async — P0-5).
     // Falls back to the base path if not a git repo or worktree creation fails.
     let workspace_path = {
         let base = std::path::Path::new(&base_workspace);
         let worktree_root = base.join(".ia-hub").join("attempts");
         let manager = crate::git::WorktreeManager::new(base, &worktree_root);
-        match manager.provision_worktree(&session_id) {
+        match manager.provision_worktree(&session_id).await {
             Ok(info) => {
                 tracing::info!(
                     session_id = %session_id,

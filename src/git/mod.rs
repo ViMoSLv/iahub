@@ -4,13 +4,16 @@
 //! Each Attempt gets its own worktree with a dedicated branch, preventing
 //! cross-contamination between concurrent agents.
 //!
+//! P0-5 FIX: All git commands use tokio::process::Command to avoid blocking
+//! the async runtime during concurrent session spawns.
+//!
 //! Flow:
 //! 1. `provision_worktree` — creates branch + worktree for an Attempt
 //! 2. Agent works in the worktree directory (PTY cwd)
 //! 3. `remove_worktree` — cleans up after verification/merge or failure
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use tokio::process::Command;
 
 /// Error from git operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,10 +64,6 @@ pub struct WorktreeManager {
 
 impl WorktreeManager {
     /// Create a new worktree manager for the given repository.
-    ///
-    /// # Arguments
-    /// * `repo_path` — Path to the git repository root
-    /// * `worktree_root` — Base directory for worktree storage (e.g., `<repo>/.ia-hub/attempts/`)
     pub fn new(repo_path: &Path, worktree_root: &Path) -> Self {
         Self {
             repo_path: repo_path.to_path_buf(),
@@ -72,17 +71,8 @@ impl WorktreeManager {
         }
     }
 
-    /// Provision a new worktree for an Attempt.
-    ///
-    /// Creates a new branch `ia-hub/attempt-<attempt_id>` from HEAD and
-    /// checks it out into a worktree at `<worktree_root>/<attempt_id>/`.
-    ///
-    /// # Arguments
-    /// * `attempt_id` — Unique identifier for this attempt (used in branch name and path)
-    ///
-    /// # Returns
-    /// `WorktreeInfo` with the path, branch name, and base commit SHA.
-    pub fn provision_worktree(&self, attempt_id: &str) -> Result<WorktreeInfo, GitError> {
+    /// Provision a new worktree for an Attempt (async — P0-5 fix).
+    pub async fn provision_worktree(&self, attempt_id: &str) -> Result<WorktreeInfo, GitError> {
         let branch_name = format!("ia-hub/attempt-{}", attempt_id);
         let worktree_path = self.worktree_root.join(attempt_id);
 
@@ -98,11 +88,10 @@ impl WorktreeManager {
             message: format!("failed to create worktree root: {}", e),
         })?;
 
-        // Get current HEAD commit SHA
-        let base_commit = self.git_output(&["rev-parse", "HEAD"])?;
+        // Get current HEAD commit SHA (async)
+        let base_commit = self.git_output(&["rev-parse", "HEAD"]).await?;
 
-        // Create branch and worktree in one command
-        // git worktree add -b <branch> <path> <start-point>
+        // Create branch and worktree in one command (async)
         self.git_run(&[
             "worktree",
             "add",
@@ -110,7 +99,7 @@ impl WorktreeManager {
             &branch_name,
             &worktree_path.to_string_lossy(),
             &base_commit,
-        ])?;
+        ]).await?;
 
         Ok(WorktreeInfo {
             worktree_path,
@@ -119,12 +108,8 @@ impl WorktreeManager {
         })
     }
 
-    /// Remove a worktree and its associated branch.
-    ///
-    /// # Arguments
-    /// * `attempt_id` — The attempt whose worktree should be removed
-    /// * `force` — If true, remove even if there are uncommitted changes
-    pub fn remove_worktree(&self, attempt_id: &str, force: bool) -> Result<(), GitError> {
+    /// Remove a worktree and its associated branch (async — P0-5 fix).
+    pub async fn remove_worktree(&self, attempt_id: &str, force: bool) -> Result<(), GitError> {
         let worktree_path = self.worktree_root.join(attempt_id);
         let branch_name = format!("ia-hub/attempt-{}", attempt_id);
 
@@ -135,19 +120,17 @@ impl WorktreeManager {
         }
         let path_str = worktree_path.to_string_lossy().to_string();
         args.push(&path_str);
-        self.git_run(&args)?;
+        self.git_run(&args).await?;
 
-        // Delete the branch
-        let mut branch_args = vec!["branch", "-D"];
-        branch_args.push(&branch_name);
-        let _ = self.git_run(&branch_args); // Best effort — branch may already be deleted
+        // Delete the branch (best effort)
+        let _ = self.git_run(&["branch", "-D", &branch_name]).await;
 
         Ok(())
     }
 
-    /// List all active worktrees managed by this manager.
-    pub fn list_worktrees(&self) -> Result<Vec<WorktreeInfo>, GitError> {
-        let output = self.git_output(&["worktree", "list", "--porcelain"])?;
+    /// List all active worktrees managed by this manager (async — P0-5 fix).
+    pub async fn list_worktrees(&self) -> Result<Vec<WorktreeInfo>, GitError> {
+        let output = self.git_output(&["worktree", "list", "--porcelain"]).await?;
         let mut worktrees = Vec::new();
         let mut current_path: Option<PathBuf> = None;
         let mut current_branch: Option<String> = None;
@@ -163,13 +146,12 @@ impl WorktreeManager {
                         worktrees.push(WorktreeInfo {
                             worktree_path: path,
                             branch_name: branch,
-                            base_commit: String::new(), // Not available from porcelain listing
+                            base_commit: String::new(),
                         });
                     }
                 }
             }
         }
-        // Handle last entry if no trailing newline
         if let (Some(path), Some(branch)) = (current_path, current_branch) {
             if branch.starts_with("ia-hub/attempt-") && path.starts_with(&self.worktree_root) {
                 worktrees.push(WorktreeInfo {
@@ -183,15 +165,14 @@ impl WorktreeManager {
         Ok(worktrees)
     }
 
-    /// Get the diff of a worktree against its base commit.
-    /// Returns the unified diff as a string.
-    pub fn get_worktree_diff(&self, attempt_id: &str) -> Result<String, GitError> {
+    /// Get the diff of a worktree against its base commit (async — P0-5 fix).
+    pub async fn get_worktree_diff(&self, attempt_id: &str) -> Result<String, GitError> {
         let worktree_path = self.worktree_root.join(attempt_id);
-        // Run git diff in the worktree directory
         let output = Command::new("git")
             .args(["diff", "HEAD"])
             .current_dir(&worktree_path)
             .output()
+            .await
             .map_err(|e| GitError::IoError {
                 message: format!("failed to run git diff: {}", e),
             })?;
@@ -206,12 +187,13 @@ impl WorktreeManager {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Run a git command in the repository and return stdout.
-    fn git_output(&self, args: &[&str]) -> Result<String, GitError> {
+    /// Run a git command asynchronously and return stdout (P0-5 fix).
+    async fn git_output(&self, args: &[&str]) -> Result<String, GitError> {
         let output = Command::new("git")
             .args(args)
             .current_dir(&self.repo_path)
             .output()
+            .await
             .map_err(|e| GitError::IoError {
                 message: format!("failed to run git {}: {}", args.first().unwrap_or(&"?"), e),
             })?;
@@ -226,9 +208,9 @@ impl WorktreeManager {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    /// Run a git command in the repository (no output capture needed).
-    fn git_run(&self, args: &[&str]) -> Result<(), GitError> {
-        self.git_output(args)?;
+    /// Run a git command asynchronously (no output capture needed).
+    async fn git_run(&self, args: &[&str]) -> Result<(), GitError> {
+        self.git_output(args).await?;
         Ok(())
     }
 }
@@ -289,14 +271,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn provision_fails_if_path_exists() {
+    #[tokio::test]
+    async fn provision_fails_if_path_exists() {
         let dir = tempfile::tempdir().unwrap();
         let worktree_root = dir.path().join("worktrees");
         std::fs::create_dir_all(worktree_root.join("existing")).unwrap();
 
         let manager = WorktreeManager::new(dir.path(), &worktree_root);
-        let result = manager.provision_worktree("existing");
+        let result = manager.provision_worktree("existing").await;
         assert!(result.is_err());
         match result.unwrap_err() {
             GitError::PathExists { .. } => {}
