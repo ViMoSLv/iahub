@@ -52,6 +52,7 @@ impl PtyInstance {
     /// # Returns
     /// A `PtyInstance` handle for controlling the session, or an error if
     /// the agent binary cannot be spawned.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_agent(
         session_id: &str,
         agent_binary: &str,
@@ -75,7 +76,7 @@ impl PtyInstance {
         for arg in agent_args {
             cmd.arg(arg);
         }
-        cmd.cwd(workspace_path.to_path_buf());
+        cmd.cwd(workspace_path);
 
         // Inject isolation environment variables
         for (k, v) in &env_vars {

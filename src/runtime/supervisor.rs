@@ -51,6 +51,7 @@ pub enum SessionEvent {
 struct SessionRecord {
     pty_instance: Arc<PtyInstance>,
     account_id: String,
+    #[allow(dead_code)]
     agent_binary: String,
 }
 

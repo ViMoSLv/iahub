@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn port_range_is_valid() {
-        assert!(PORT_RANGE_START < PORT_RANGE_END);
-        assert!(PORT_RANGE_START >= 1024); // Non-privileged ports
+        const { assert!(PORT_RANGE_START < PORT_RANGE_END) };
+        const { assert!(PORT_RANGE_START >= 1024) }; // Non-privileged ports
     }
 }

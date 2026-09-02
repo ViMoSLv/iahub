@@ -62,7 +62,7 @@ pub async fn handle_session_socket(
                 "type": "error",
                 "message": format!("Session {} not found", session_id)
             });
-            let _ = ws_sender.send(Message::Text(err.to_string().into())).await;
+            let _ = ws_sender.send(Message::Text(err.to_string())).await;
             return;
         }
     };
@@ -111,7 +111,7 @@ pub async fn handle_session_socket(
     // SEND TASK: PTY output → WebSocket binary frames
     let mut send_task = tokio::spawn(async move {
         while let Some(bytes) = rx_pty_to_ws.recv().await {
-            if ws_sender.send(Message::Binary(bytes.into())).await.is_err() {
+            if ws_sender.send(Message::Binary(bytes)).await.is_err() {
                 break;
             }
         }
