@@ -11,6 +11,10 @@
   </head>
   <body class="bg-surface text-gray-100 font-mono antialiased">
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx?v=2"></script>
+    <script type="module">
+      // Cache-bust: force fresh module load on every page visit
+      const ts = Date.now();
+      import(`/src/main.tsx?t=${ts}`);
+    </script>
   </body>
 </html>
