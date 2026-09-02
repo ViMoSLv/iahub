@@ -4,7 +4,7 @@
 //! All routes are bound to localhost only (security boundary).
 
 use axum::{
-    extract::State,
+    extract::{State, WebSocketUpgrade},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::health::HealthResponse;
-use super::ws::WsState;
+use super::ws::{self, WsState};
 
 /// Application state shared across all route handlers.
 pub struct AppState {
@@ -29,7 +29,18 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/health", get(health_handler))
         .route("/api/sessions", get(list_sessions_handler).post(spawn_session_handler))
         .route("/api/agents", get(list_agents_handler))
+        .route("/ws/session/:id", get(ws_upgrade_handler))
         .with_state(state)
+}
+
+/// WebSocket upgrade handler for PTY session bridge.
+async fn ws_upgrade_handler(
+    ws: WebSocketUpgrade,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let ws_state = state.ws_state.clone();
+    ws.on_upgrade(move |socket| ws::handle_session_socket(socket, session_id, ws_state))
 }
 
 /// GET /health — readiness probe for frontend (Gap 6).
