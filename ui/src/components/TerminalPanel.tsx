@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -10,17 +10,22 @@ interface TerminalPanelProps {
   isActive: boolean;
 }
 
+type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
+
 export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const offsetRef = useRef<number>(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef<number>(0);
+  const [connState, setConnState] = useState<ConnectionState>("connecting");
 
-  const connect = useCallback(() => {
-    if (!containerRef.current) return;
+  // Initialize terminal once — stable across renders
+  useEffect(() => {
+    if (!containerRef.current || termRef.current) return;
 
-    // Initialize xterm.js
     const term = new Terminal({
       cursorBlink: true,
       theme: {
@@ -47,7 +52,6 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
     term.loadAddon(fitAddon);
     term.open(containerRef.current);
 
-    // Delay fit to ensure DOM is ready
     requestAnimationFrame(() => {
       try { fitAddon.fit(); } catch { /* container not visible yet */ }
     });
@@ -55,86 +59,128 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
     termRef.current = term;
     fitRef.current = fitAddon;
 
-    // Connect WebSocket
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/session/${session.id}`);
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      // Send reconnect with current offset for scrollback replay
-      const msg = JSON.stringify({
-        type: "reconnect",
-        session_id: session.id,
-        last_byte_offset: offsetRef.current,
-      });
-      ws.send(msg);
+    return () => {
+      term.dispose();
+      termRef.current = null;
+      fitRef.current = null;
     };
+  }, []);
 
-    ws.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        // Binary frame: terminal output
-        const bytes = new Uint8Array(event.data);
-        offsetRef.current += bytes.length;
-        term.write(bytes);
-      } else {
-        // Text frame: control event from backend
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === "agent_exit") {
-            term.writeln(`\r\n\x1b[31m[Agent exited: ${data.message}]\x1b[0m`);
-          } else if (data.type === "error") {
-            term.writeln(`\r\n\x1b[31m[Error: ${data.message}]\x1b[0m`);
+  // WebSocket connection with auto-reconnect — only depends on session.id and port
+  useEffect(() => {
+    let disposed = false;
+
+    const connectWs = () => {
+      if (disposed) return;
+      const term = termRef.current;
+      if (!term) return;
+
+      setConnState("connecting");
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/session/${session.id}`);
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (disposed) return;
+        setConnState("connected");
+        reconnectAttemptRef.current = 0;
+        // Request scrollback replay from where we left off
+        ws.send(JSON.stringify({
+          type: "reconnect",
+          session_id: session.id,
+          last_byte_offset: offsetRef.current,
+        }));
+      };
+
+      ws.onmessage = (event) => {
+        if (disposed || !termRef.current) return;
+        if (event.data instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(event.data);
+          offsetRef.current += bytes.length;
+          termRef.current.write(bytes);
+        } else {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "agent_exit") {
+              termRef.current.writeln(`\r\n\x1b[31m[Agent exited: ${data.message}]\x1b[0m`);
+              setConnState("disconnected");
+            } else if (data.type === "error") {
+              termRef.current.writeln(`\r\n\x1b[31m[Error: ${data.message}]\x1b[0m`);
+            }
+          } catch {
+            // Ignore unparseable text frames
           }
-        } catch {
-          // Ignore unparseable text frames
         }
-      }
-    };
+      };
 
-    ws.onclose = () => {
-      term.writeln("\r\n\x1b[90m[Connection closed]\x1b[0m");
-    };
+      ws.onclose = () => {
+        if (disposed) return;
+        setConnState("disconnected");
+        wsRef.current = null;
+        // Exponential backoff reconnect: 1s, 2s, 4s, 8s, max 30s
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 30000);
+        reconnectAttemptRef.current++;
+        if (termRef.current) {
+          termRef.current.writeln(`\r\n\x1b[90m[Reconnecting in ${delay / 1000}s...]\x1b[0m`);
+        }
+        reconnectTimerRef.current = setTimeout(connectWs, delay);
+      };
 
-    ws.onerror = () => {
-      term.writeln("\r\n\x1b[31m[Connection error]\x1b[0m");
-    };
+      ws.onerror = () => {
+        if (disposed) return;
+        setConnState("error");
+      };
 
-    // Keyboard input → PTY
-    term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        const encoder = new TextEncoder();
-        ws.send(encoder.encode(data));
-      }
-    });
-
-    // Resize observer
-    const resizeObserver = new ResizeObserver(() => {
-      if (!isActive) return;
-      try {
-        fitAddon.fit();
+      // Keyboard input → PTY
+      const dataDisposable = term.onData((data) => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
+          const encoder = new TextEncoder();
+          ws.send(encoder.encode(data));
+        }
+      });
+
+      // Store disposable for cleanup
+      return dataDisposable;
+    };
+
+    const dataDisposable = connectWs();
+
+    return () => {
+      disposed = true;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      dataDisposable?.dispose();
+    };
+  }, [session.id, port]);
+
+  // Resize observer — separate effect, doesn't recreate terminal or WS
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (!isActive || !fitRef.current || !wsRef.current) return;
+      try {
+        fitRef.current.fit();
+        if (wsRef.current.readyState === WebSocket.OPEN && termRef.current) {
+          wsRef.current.send(JSON.stringify({
             type: "resize",
             session_id: session.id,
-            rows: term.rows,
-            cols: term.cols,
+            rows: termRef.current.rows,
+            cols: termRef.current.cols,
           }));
         }
       } catch { /* ignore */ }
     });
     resizeObserver.observe(containerRef.current);
 
-    return () => {
-      resizeObserver.disconnect();
-      ws.close();
-      term.dispose();
-    };
-  }, [session.id, port, isActive]);
-
-  useEffect(() => {
-    const cleanup = connect();
-    return cleanup;
-  }, [connect]);
+    return () => resizeObserver.disconnect();
+  }, [isActive, session.id]);
 
   // Re-fit when panel becomes active
   useEffect(() => {
@@ -145,23 +191,33 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
     }
   }, [isActive]);
 
-  const statusColor = session.status === "active"
+  const statusColor = connState === "connected"
     ? "bg-status-success"
-    : session.status === "idle"
+    : connState === "connecting"
     ? "bg-yellow-500"
+    : connState === "error"
+    ? "bg-status-error"
     : "bg-status-idle";
+
+  const statusLabel = connState === "connected"
+    ? session.agent_binary || session.provider
+    : connState === "connecting"
+    ? "connecting..."
+    : connState === "error"
+    ? "error"
+    : "disconnected";
 
   return (
     <div className="h-full flex flex-col bg-[var(--panel-bg)] rounded-lg border border-[var(--border-color)] overflow-hidden">
       {/* Panel header */}
       <div className="h-8 flex items-center px-3 gap-2 bg-[var(--panel-header-bg)] border-b border-[var(--border-color)] shrink-0">
-        <span className={`w-2 h-2 rounded-full ${statusColor} ${session.status === "active" ? "status-pulse" : ""}`} />
+        <span className={`w-2 h-2 rounded-full ${statusColor} ${connState === "connected" ? "status-pulse" : ""}`} />
         <span className="text-xs font-medium text-gray-300 truncate">
-          {session.agent_binary || session.provider}
+          {statusLabel}
         </span>
         {session.workspace_path && (
           <span className="text-[10px] text-gray-500 bg-surface px-1.5 py-0.5 rounded truncate max-w-[120px]">
-            ~/{session.workspace_path.split("/").pop()}
+            ~/{session.workspace_path.split(/[/\\]/).pop()}
           </span>
         )}
         <div className="flex-1" />
