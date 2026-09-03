@@ -27,7 +27,7 @@ export default function App() {
   const [layout, setLayout] = useState<LayoutMode>("grid");
   const [activeView, setActiveView] = useState<ActiveView>("terminals");
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [projects] = useState<ProjectInfo[]>([]);
+  const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [accounts, setAccounts] = useState<ProviderAccountInfo[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [agents, setAgents] = useState<Array<{ name: string; binary: string; status: string }>>([]);
@@ -92,6 +92,15 @@ export default function App() {
     fetch(`${baseUrl}/api/accounts`)
       .then((r) => r.json())
       .then((data) => setAccounts(data))
+      .catch(() => {});
+  }, [phase, baseUrl]);
+
+  // Fetch projects on mount
+  useEffect(() => {
+    if (phase !== "ready") return;
+    fetch(`${baseUrl}/api/projects`)
+      .then((r) => r.json())
+      .then((data) => setProjects(data))
       .catch(() => {});
   }, [phase, baseUrl]);
 
@@ -292,7 +301,6 @@ export default function App() {
         sessionCount={sessions.length}
         connected={connected}
         agents={agents}
-        accounts={accounts}
         onSpawnSession={handleSpawnSession}
       />
 
