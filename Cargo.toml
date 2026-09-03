@@ -56,6 +56,13 @@ keyring = { version = "3", features = ["windows-native", "apple-native", "linux-
 
 # Directories for XDG/platform-specific paths
 dirs = "5"
+git2 = "0.21.0"
+notify = "8.2.0"
+dashmap = "6.2.1"
+ulid = "3.0.0"
+serde_yaml = "0.9.34"
+regex = "1.13.1"
+crc32fast = "1.5.1"
 
 [dev-dependencies]
 tempfile = "3"
