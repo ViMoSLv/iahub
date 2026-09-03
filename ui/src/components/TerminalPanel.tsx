@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { SessionInfo } from "../lib/types";
+import { TerminalSearch } from "./TerminalSearch";
 
 interface TerminalPanelProps {
   session: SessionInfo;
@@ -21,6 +22,23 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef<number>(0);
   const [connState, setConnState] = useState<ConnectionState>("connecting");
+  const [searchVisible, setSearchVisible] = useState(false);
+
+  const toggleSearch = useCallback(() => {
+    setSearchVisible((v) => !v);
+  }, []);
+
+  // Ctrl+F to toggle search
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        toggleSearch();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [toggleSearch]);
 
   // Initialize terminal once — stable across renders
   useEffect(() => {
@@ -246,7 +264,14 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
         </button>
       </div>
       {/* Terminal area */}
-      <div ref={containerRef} className="flex-1 min-h-0" />
+      <div className="relative flex-1 min-h-0">
+        <TerminalSearch
+          terminal={termRef.current}
+          visible={searchVisible}
+          onClose={() => setSearchVisible(false)}
+        />
+        <div ref={containerRef} className="h-full" />
+      </div>
     </div>
   );
 }
