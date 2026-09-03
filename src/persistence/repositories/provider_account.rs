@@ -8,7 +8,7 @@
 
 use rusqlite::params;
 
-use crate::domain::{EntityVersion, ProviderAccountId, ProviderKind, ProviderAccountStatus, Timestamp};
+use crate::domain::{EntityVersion, ProviderAccountId, Timestamp};
 use crate::persistence::error::PersistenceError;
 use crate::persistence::transaction::Transaction;
 

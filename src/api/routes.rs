@@ -21,6 +21,8 @@ pub struct AppState {
     pub ws_state: Arc<WsState>,
     pub start_time: std::time::Instant,
     pub schema_version: i64,
+    /// Path to the SQLite database for persistent storage.
+    pub db_path: std::path::PathBuf,
 }
 
 /// Build the API router with all REST endpoints.
@@ -313,7 +315,7 @@ async fn list_agents_handler() -> impl IntoResponse {
     (StatusCode::OK, Json(result))
 }
 
-// ── Provider Account endpoints ─────────────────────────────────────────────
+// ── Provider Account endpoints (P0-4: SQLite-backed) ───────────────────────
 
 #[derive(Debug, Deserialize)]
 struct CreateAccountRequest {
@@ -327,83 +329,123 @@ struct CreateAccountRequest {
 
 fn default_max_concurrent() -> u32 { 2 }
 
-#[derive(Debug, Serialize)]
-struct AccountResponse {
-    id: String,
-    provider: String,
-    label: String,
-    status: String,
-    max_concurrent_sessions: u32,
-    active_sessions: usize,
-}
-
-/// In-memory account registry for MVP — will be backed by SQLite in production.
-use std::sync::{Mutex, LazyLock};
-
-#[derive(Debug, Clone)]
-struct StoredAccount {
-    id: String,
-    provider: String,
-    label: String,
-    #[allow(dead_code)]
-    identity_hint: Option<String>,
-    max_concurrent_sessions: u32,
-}
-
-static ACCOUNTS: LazyLock<Mutex<Vec<StoredAccount>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-
-/// POST /api/accounts — register a new ProviderAccount.
+/// POST /api/accounts — register a new ProviderAccount (persisted to SQLite).
+/// Uses spawn_blocking because rusqlite::Connection is not Send.
 async fn create_account_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateAccountRequest>,
-) -> impl IntoResponse {
+) -> (StatusCode, Json<serde_json::Value>) {
+    let db_path = state.db_path.clone();
     let account_id = uuid::Uuid::new_v4().to_string();
-    let account = StoredAccount {
-        id: account_id.clone(),
-        provider: req.provider.clone(),
-        label: req.label.clone(),
-        identity_hint: req.identity_hint,
-        max_concurrent_sessions: req.max_concurrent_sessions,
-    };
+    let max_concurrent = req.max_concurrent_sessions;
+    let provider = req.provider.clone();
+    let label = req.label.clone();
+    let identity_hint = req.identity_hint.clone();
 
-    // Register concurrency limit with supervisor
-    state.ws_state.supervisor.set_account_limit(&account_id, req.max_concurrent_sessions).await;
+    // Clone for use inside spawn_blocking (closure takes ownership via move)
+    let provider_for_db = provider.clone();
+    let label_for_db = label.clone();
+    let account_id_for_db = account_id.clone();
 
-    // Store in registry
-    {
-        let mut accounts = ACCOUNTS.lock().unwrap();
-        accounts.push(account);
+    // Run blocking SQLite work on a thread pool
+    let db_result = tokio::task::spawn_blocking(move || {
+        use crate::persistence::repositories::ProviderAccountRepository;
+        use crate::persistence::repositories::provider_account::ProviderAccountRow;
+        use crate::domain::{EntityVersion, ProviderAccountId, Timestamp};
+        use crate::persistence::SqliteStore;
+
+        let now = chrono::Utc::now().timestamp().to_string();
+        let row = ProviderAccountRow {
+            id: ProviderAccountId::from(account_id_for_db.as_str()),
+            provider_kind: provider_for_db,
+            label: label_for_db,
+            identity_hint,
+            auth_profile_id: format!("auth-{}", account_id_for_db),
+            status: "ACTIVE".to_string(),
+            max_concurrent_sessions: max_concurrent as i64,
+            created_at: Timestamp(now.clone()),
+            updated_at: Timestamp(now),
+            version: EntityVersion::INITIAL,
+        };
+
+        let mut store = SqliteStore::open(&db_path)
+            .map_err(|e| format!("DB open failed: {}", e))?;
+        let tx = store.transaction()
+            .map_err(|e| format!("TX failed: {}", e))?;
+        ProviderAccountRepository::insert(&tx, &row)
+            .map_err(|e| format!("insert failed: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("commit failed: {}", e))?;
+        Ok::<_, String>(())
+    }).await;
+
+    match db_result {
+        Ok(Ok(())) => {
+            // Register concurrency limit with supervisor (async, Send-safe)
+            state.ws_state.supervisor.set_account_limit(&account_id, max_concurrent).await;
+            let resp = serde_json::json!({
+                "id": account_id,
+                "provider": provider,
+                "label": label,
+                "status": "active",
+                "max_concurrent_sessions": max_concurrent,
+                "active_sessions": 0,
+            });
+            (StatusCode::CREATED, Json(resp))
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("task join failed: {}", e) })),
+        ),
     }
-
-    let resp = AccountResponse {
-        id: account_id,
-        provider: req.provider,
-        label: req.label,
-        status: "active".to_string(),
-        max_concurrent_sessions: req.max_concurrent_sessions,
-        active_sessions: 0,
-    };
-
-    (StatusCode::CREATED, Json(resp))
 }
 
-/// GET /api/accounts — list all registered ProviderAccounts.
+/// GET /api/accounts — list all registered ProviderAccounts (from SQLite).
+/// Uses spawn_blocking because rusqlite::Connection is not Send.
 async fn list_accounts_handler(
-    State(_state): State<Arc<AppState>>,
-) -> impl IntoResponse {
-    let accounts = ACCOUNTS.lock().unwrap().clone();
-    let result: Vec<AccountResponse> = accounts.into_iter().map(|a| {
-        AccountResponse {
-            id: a.id.clone(),
-            provider: a.provider,
-            label: a.label,
-            status: "active".to_string(),
-            max_concurrent_sessions: a.max_concurrent_sessions,
-            active_sessions: 0, // TODO: query supervisor for real count
-        }
-    }).collect();
+    State(state): State<Arc<AppState>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let db_path = state.db_path.clone();
 
-    (StatusCode::OK, Json(result))
+    let db_result = tokio::task::spawn_blocking(move || {
+        use crate::persistence::repositories::ProviderAccountRepository;
+        use crate::persistence::SqliteStore;
+
+        let mut store = SqliteStore::open(&db_path)
+            .map_err(|e| format!("DB open failed: {}", e))?;
+        let tx = store.transaction()
+            .map_err(|e| format!("TX failed: {}", e))?;
+        let accounts = ProviderAccountRepository::list(&tx, None)
+            .map_err(|e| format!("list failed: {}", e))?;
+
+        let result: Vec<serde_json::Value> = accounts.into_iter().map(|a| {
+            serde_json::json!({
+                "id": a.id.0,
+                "provider": a.provider_kind,
+                "label": a.label,
+                "status": a.status.to_lowercase(),
+                "max_concurrent_sessions": a.max_concurrent_sessions as u32,
+                "active_sessions": 0,
+            })
+        }).collect();
+        Ok::<_, String>(result)
+    }).await;
+
+    match db_result {
+        Ok(Ok(result)) => (StatusCode::OK, Json(serde_json::json!(result))),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("task join failed: {}", e) })),
+        ),
+    }
 }
 
 // ── Orchestrator endpoint ──────────────────────────────────────────────────
@@ -419,7 +461,7 @@ struct OrchestrateRequest {
 
 /// POST /api/orchestrate — decompose an objective into tasks with account assignments.
 async fn orchestrate_handler(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(req): Json<OrchestrateRequest>,
 ) -> impl IntoResponse {
     use crate::orchestrator::{TaskDecomposer, SessionDispatcher};
@@ -447,15 +489,29 @@ async fn orchestrate_handler(
         TaskDecomposer::decompose(&req.objective)
     };
 
-    // Build account slots from registered accounts
-    let accounts = ACCOUNTS.lock().unwrap().clone();
-    let slots: Vec<AccountSlot> = accounts.iter().map(|a| AccountSlot {
-        account_id: a.id.clone(),
-        provider: a.provider.clone(),
-        max_concurrent: a.max_concurrent_sessions,
-        active_sessions: 0, // TODO: query real count from supervisor
-        available: true,
-    }).collect();
+    // Build account slots from SQLite-persisted accounts
+    use crate::persistence::repositories::ProviderAccountRepository;
+    use crate::persistence::SqliteStore;
+
+    let slots: Vec<AccountSlot> = if let Ok(mut store) = SqliteStore::open(&state.db_path) {
+        if let Ok(tx) = store.transaction() {
+            ProviderAccountRepository::list(&tx, None)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|a| AccountSlot {
+                    account_id: a.id.0,
+                    provider: a.provider_kind,
+                    max_concurrent: a.max_concurrent_sessions as u32,
+                    active_sessions: 0,
+                    available: a.status == "ACTIVE",
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
 
     // Attempt dispatch
     let result = if slots.is_empty() {
@@ -534,6 +590,7 @@ mod tests {
             ws_state: Arc::new(ws_state),
             start_time: std::time::Instant::now(),
             schema_version: 7,
+            db_path: std::path::PathBuf::from(":memory:"),
         })
     }
 

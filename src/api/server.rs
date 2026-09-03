@@ -48,10 +48,19 @@ impl ApiServer {
         });
 
         let ws_state = WsState { supervisor };
+
+        // Resolve database path for persistent storage
+        let db_path = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("iahub")
+            .join("data")
+            .join("mega-brain.db");
+
         let app_state = Arc::new(AppState {
             ws_state: Arc::new(ws_state),
             start_time: std::time::Instant::now(),
             schema_version: 7, // current schema version
+            db_path,
         });
 
         let cors = CorsLayer::new()

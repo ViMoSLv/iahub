@@ -29,23 +29,34 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
     const term = new Terminal({
       cursorBlink: true,
       theme: {
-        background: "#0d0d0d",
-        foreground: "#e8e8d0",
-        cursor: "#c8b400",
-        selectionBackground: "#6b620080",
-        black: "#1a1a0e",
-        red: "#c83232",
-        green: "#7ab800",
-        yellow: "#d4c800",
-        blue: "#8ab4f8",
-        magenta: "#c8a0e0",
-        cyan: "#80cbc4",
-        white: "#e8e8d0",
+        background: "#0B0B0B",
+        foreground: "#DCDCDC",
+        cursor: "#AEAFAD",
+        cursorAccent: "#0B0B0B",
+        selectionBackground: "#264F7880",
+        selectionForeground: "#FFFFFF",
+        black: "#000000",
+        red: "#CD3131",
+        green: "#0DBC79",
+        yellow: "#E5E510",
+        blue: "#2472C8",
+        magenta: "#BC3FBC",
+        cyan: "#11A8CD",
+        white: "#E5E5E5",
+        brightBlack: "#666666",
+        brightRed: "#F14C4C",
+        brightGreen: "#23D18B",
+        brightYellow: "#F5F543",
+        brightBlue: "#3B8EEA",
+        brightMagenta: "#D670D6",
+        brightCyan: "#29B8DB",
+        brightWhite: "#FFFFFF",
       },
       fontFamily: "JetBrains Mono, Fira Code, Menlo, monospace",
       fontSize: 13,
       lineHeight: 1.2,
       scrollback: 5000,
+      allowProposedApi: true,
     });
 
     const fitAddon = new FitAddon();
@@ -84,7 +95,6 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
         if (disposed) return;
         setConnState("connected");
         reconnectAttemptRef.current = 0;
-        // Request scrollback replay from where we left off
         ws.send(JSON.stringify({
           type: "reconnect",
           session_id: session.id,
@@ -117,7 +127,6 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
         if (disposed) return;
         setConnState("disconnected");
         wsRef.current = null;
-        // Exponential backoff reconnect: 1s, 2s, 4s, 8s, max 30s
         const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 30000);
         reconnectAttemptRef.current++;
         if (termRef.current) {
@@ -131,7 +140,6 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
         setConnState("error");
       };
 
-      // Keyboard input → PTY
       const dataDisposable = term.onData((data) => {
         if (ws.readyState === WebSocket.OPEN) {
           const encoder = new TextEncoder();
@@ -139,7 +147,6 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
         }
       });
 
-      // Store disposable for cleanup
       return dataDisposable;
     };
 
@@ -159,15 +166,13 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
     };
   }, [session.id, port]);
 
-  // Resize observer — separate effect, doesn't recreate terminal or WS
+  // Resize observer — re-fit on container size changes
   useEffect(() => {
-    if (!containerRef.current) return;
-
+    if (!containerRef.current || !fitRef.current) return;
     const resizeObserver = new ResizeObserver(() => {
-      if (!isActive || !fitRef.current || !wsRef.current) return;
       try {
-        fitRef.current.fit();
-        if (wsRef.current.readyState === WebSocket.OPEN && termRef.current) {
+        fitRef.current?.fit();
+        if (wsRef.current?.readyState === WebSocket.OPEN && termRef.current) {
           wsRef.current.send(JSON.stringify({
             type: "resize",
             session_id: session.id,
@@ -192,12 +197,12 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
   }, [isActive]);
 
   const statusColor = connState === "connected"
-    ? "bg-status-success"
+    ? "bg-[#4ADE80]"
     : connState === "connecting"
-    ? "bg-yellow-500"
+    ? "bg-[#F0C24B]"
     : connState === "error"
-    ? "bg-status-error"
-    : "bg-status-idle";
+    ? "bg-[#f44747]"
+    : "bg-[#6E6E6E]";
 
   const statusLabel = connState === "connected"
     ? session.agent_binary || session.provider
@@ -208,22 +213,22 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
     : "disconnected";
 
   return (
-    <div className="h-full flex flex-col bg-[var(--panel-bg)] rounded-lg border border-[var(--border-color)] overflow-hidden">
+    <div className="h-full flex flex-col bg-[#0B0B0B] rounded-lg border border-[#171717] overflow-hidden">
       {/* Panel header */}
-      <div className="h-8 flex items-center px-3 gap-2 bg-[var(--panel-header-bg)] border-b border-[var(--border-color)] shrink-0">
+      <div className="h-8 flex items-center px-3 gap-2 bg-[#121212] border-b border-[#171717] shrink-0">
         <span className={`w-2 h-2 rounded-full ${statusColor} ${connState === "connected" ? "status-pulse" : ""}`} />
-        <span className="text-xs font-medium text-gray-300 truncate">
+        <span className="text-xs font-medium text-[#C9C9C9] truncate">
           {statusLabel}
         </span>
         {session.workspace_path && (
-          <span className="text-[10px] text-gray-500 bg-surface px-1.5 py-0.5 rounded truncate max-w-[120px]">
+          <span className="text-[10px] text-[#7A7A7A] bg-[#0B0B0B] px-1.5 py-0.5 rounded truncate max-w-[120px] border border-[#232323]">
             ~/{session.workspace_path.split(/[/\\]/).pop()}
           </span>
         )}
         <div className="flex-1" />
         {/* Action buttons */}
         <button
-          className="text-gray-500 hover:text-gray-300 text-xs px-1"
+          className="text-[#7A7A7A] hover:text-[#DCDCDC] text-xs px-1 transition-colors"
           title="Interrupt (Ctrl+C)"
           onClick={() => {
             if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -236,7 +241,7 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
         >
           ⏹
         </button>
-        <button className="text-gray-500 hover:text-gray-300 text-xs px-1" title="Expand">
+        <button className="text-[#7A7A7A] hover:text-[#DCDCDC] text-xs px-1 transition-colors" title="Expand">
           ⛶
         </button>
       </div>

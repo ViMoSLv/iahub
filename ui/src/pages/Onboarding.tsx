@@ -25,7 +25,6 @@ export function Onboarding({ onComplete, port }: OnboardingProps) {
       });
       setStep("add_account");
     } catch {
-      // API not ready yet — skip to next step for demo
       setStep("add_account");
     } finally {
       setLoading(false);
@@ -49,34 +48,41 @@ export function Onboarding({ onComplete, port }: OnboardingProps) {
     }
   };
 
+  const steps: Step[] = ["welcome", "import_repo", "add_account", "launch"];
+  const currentIdx = steps.indexOf(step);
+
   return (
-    <div className="h-full w-full flex items-center justify-center bg-surface">
+    <div className="h-full w-full flex items-center justify-center bg-[#0B0B0B]">
       <div className="w-full max-w-md mx-4">
         {/* Progress indicator */}
         <div className="flex items-center justify-center gap-2 mb-8">
-          {(["welcome", "import_repo", "add_account", "launch"] as Step[]).map((s, i) => (
+          {steps.map((s, i) => (
             <div
               key={s}
-              className={`w-2 h-2 rounded-full transition-colors ${
-                step === s ? "bg-accent w-6" : i < ["welcome", "import_repo", "add_account", "launch"].indexOf(step) ? "bg-accent/50" : "bg-gray-600"
+              className={`h-1 rounded-full transition-all duration-300 ${
+                step === s
+                  ? "bg-[#007acc] w-8"
+                  : i < currentIdx
+                  ? "bg-[#007acc]/40 w-2"
+                  : "bg-[#333] w-2"
               }`}
             />
           ))}
         </div>
 
-        <div className="bg-surface-raised rounded-xl border border-[var(--border-color)] p-8">
+        <div className="bg-[#121212] rounded-xl border border-[#232323] p-8">
           {step === "welcome" && (
             <div className="text-center">
-              <div className="w-16 h-16 rounded-2xl bg-accent/20 flex items-center justify-center mx-auto mb-4">
-                <span className="text-2xl font-bold text-accent">IA</span>
+              <div className="w-16 h-16 rounded-2xl bg-[#007acc]/15 flex items-center justify-center mx-auto mb-4 border border-[#007acc]/20">
+                <span className="text-2xl font-bold text-[#007acc]">IA</span>
               </div>
-              <h1 className="text-xl font-bold text-gray-100 mb-2">Bem-vindo ao IA-Hub</h1>
-              <p className="text-gray-400 text-sm mb-6">
+              <h1 className="text-xl font-bold text-[#DCDCDC] mb-2">Bem-vindo ao IA-Hub</h1>
+              <p className="text-[#A3A3A3] text-sm mb-6">
                 Multi-Agent IDE Control Plane. Vamos configurar seu ambiente em 3 passos rápidos.
               </p>
               <button
                 onClick={() => setStep("import_repo")}
-                className="w-full py-2.5 bg-accent hover:bg-accent/90 text-white rounded-lg text-sm font-medium transition-colors"
+                className="w-full py-2.5 bg-[#007acc] hover:bg-[#007acc]/90 text-white rounded-lg text-sm font-medium transition-colors"
               >
                 Começar
               </button>
@@ -85,8 +91,8 @@ export function Onboarding({ onComplete, port }: OnboardingProps) {
 
           {step === "import_repo" && (
             <div>
-              <h2 className="text-lg font-bold text-gray-100 mb-1">Importar Repositório</h2>
-              <p className="text-gray-400 text-sm mb-4">
+              <h2 className="text-lg font-bold text-[#DCDCDC] mb-1">Importar Repositório</h2>
+              <p className="text-[#A3A3A3] text-sm mb-4">
                 Selecione a pasta do projeto que você quer gerenciar com agentes de IA.
               </p>
               <input
@@ -94,19 +100,19 @@ export function Onboarding({ onComplete, port }: OnboardingProps) {
                 value={repoPath}
                 onChange={(e) => setRepoPath(e.target.value)}
                 placeholder="C:\Users\you\projects\my-app"
-                className="w-full px-3 py-2 bg-surface border border-[var(--border-color)] rounded-lg text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-accent mb-4 font-mono"
+                className="w-full px-3 py-2 bg-[#0B0B0B] border border-[#232323] rounded-lg text-sm text-[#DCDCDC] placeholder-[#555] focus:outline-none focus:border-[#007acc] mb-4 font-mono"
               />
               <div className="flex gap-2">
                 <button
                   onClick={() => setStep("welcome")}
-                  className="flex-1 py-2 border border-[var(--border-color)] text-gray-400 rounded-lg text-sm hover:text-gray-200 transition-colors"
+                  className="flex-1 py-2 border border-[#232323] text-[#A3A3A3] rounded-lg text-sm hover:text-[#DCDCDC] hover:border-[#333] transition-colors"
                 >
                   Voltar
                 </button>
                 <button
                   onClick={handleImportRepo}
                   disabled={loading || !repoPath.trim()}
-                  className="flex-1 py-2 bg-accent hover:bg-accent/90 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
+                  className="flex-1 py-2 bg-[#007acc] hover:bg-[#007acc]/90 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors"
                 >
                   {loading ? "Importando..." : "Importar"}
                 </button>
@@ -116,14 +122,14 @@ export function Onboarding({ onComplete, port }: OnboardingProps) {
 
           {step === "add_account" && (
             <div>
-              <h2 className="text-lg font-bold text-gray-100 mb-1">Adicionar Conta</h2>
-              <p className="text-gray-400 text-sm mb-4">
+              <h2 className="text-lg font-bold text-[#DCDCDC] mb-1">Adicionar Conta</h2>
+              <p className="text-[#A3A3A3] text-sm mb-4">
                 Conecte uma conta de provider de IA (Claude, Antigravity, Codex, etc.)
               </p>
               <select
                 value={provider}
                 onChange={(e) => setProvider(e.target.value)}
-                className="w-full px-3 py-2 bg-surface border border-[var(--border-color)] rounded-lg text-sm text-gray-200 focus:outline-none focus:border-accent mb-3"
+                className="w-full px-3 py-2 bg-[#0B0B0B] border border-[#232323] rounded-lg text-sm text-[#DCDCDC] focus:outline-none focus:border-[#007acc] mb-3"
               >
                 <option value="claude">Claude Code</option>
                 <option value="antigravity">Antigravity</option>
@@ -135,19 +141,19 @@ export function Onboarding({ onComplete, port }: OnboardingProps) {
                 value={accountLabel}
                 onChange={(e) => setAccountLabel(e.target.value)}
                 placeholder="Minha conta Claude A"
-                className="w-full px-3 py-2 bg-surface border border-[var(--border-color)] rounded-lg text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-accent mb-4"
+                className="w-full px-3 py-2 bg-[#0B0B0B] border border-[#232323] rounded-lg text-sm text-[#DCDCDC] placeholder-[#555] focus:outline-none focus:border-[#007acc] mb-4"
               />
               <div className="flex gap-2">
                 <button
                   onClick={() => setStep("import_repo")}
-                  className="flex-1 py-2 border border-[var(--border-color)] text-gray-400 rounded-lg text-sm hover:text-gray-200 transition-colors"
+                  className="flex-1 py-2 border border-[#232323] text-[#A3A3A3] rounded-lg text-sm hover:text-[#DCDCDC] hover:border-[#333] transition-colors"
                 >
                   Voltar
                 </button>
                 <button
                   onClick={handleAddAccount}
                   disabled={loading || !accountLabel.trim()}
-                  className="flex-1 py-2 bg-accent hover:bg-accent/90 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
+                  className="flex-1 py-2 bg-[#007acc] hover:bg-[#007acc]/90 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors"
                 >
                   {loading ? "Salvando..." : "Adicionar"}
                 </button>
@@ -157,16 +163,16 @@ export function Onboarding({ onComplete, port }: OnboardingProps) {
 
           {step === "launch" && (
             <div className="text-center">
-              <div className="w-12 h-12 rounded-full bg-status-success/20 flex items-center justify-center mx-auto mb-4">
-                <span className="text-status-success text-xl">✓</span>
+              <div className="w-12 h-12 rounded-full bg-[#4ADE80]/15 flex items-center justify-center mx-auto mb-4 border border-[#4ADE80]/20">
+                <span className="text-[#4ADE80] text-xl">✓</span>
               </div>
-              <h2 className="text-lg font-bold text-gray-100 mb-2">Tudo Pronto!</h2>
-              <p className="text-gray-400 text-sm mb-6">
+              <h2 className="text-lg font-bold text-[#DCDCDC] mb-2">Tudo Pronto!</h2>
+              <p className="text-[#A3A3A3] text-sm mb-6">
                 Seu ambiente está configurado. Você pode iniciar sessões de agentes a qualquer momento pelo painel principal.
               </p>
               <button
                 onClick={onComplete}
-                className="w-full py-2.5 bg-accent hover:bg-accent/90 text-white rounded-lg text-sm font-medium transition-colors"
+                className="w-full py-2.5 bg-[#007acc] hover:bg-[#007acc]/90 text-white rounded-lg text-sm font-medium transition-colors"
               >
                 Abrir Painel
               </button>
@@ -179,7 +185,7 @@ export function Onboarding({ onComplete, port }: OnboardingProps) {
           <div className="text-center mt-4">
             <button
               onClick={onComplete}
-              className="text-gray-500 text-xs hover:text-gray-300 transition-colors"
+              className="text-[#555] text-xs hover:text-[#A3A3A3] transition-colors"
             >
               Pular onboarding →
             </button>

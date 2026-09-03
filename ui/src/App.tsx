@@ -1,15 +1,26 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { PanelGrid } from "./components/PanelGrid";
 import { Header } from "./components/Header";
 import { Onboarding } from "./pages/Onboarding";
 import { OrchestratorView } from "./components/OrchestratorView";
+import { FileExplorer, buildFileTree } from "./components/FileExplorer";
+import { ActivityBar } from "./components/ActivityBar";
 import { useBackend } from "./hooks/useBackend";
 import type { SessionInfo, ProjectInfo, ProviderAccountInfo } from "./lib/types";
 
 type LayoutMode = "grid" | "spotlight" | "sidebar";
 type AppPhase = "loading" | "onboarding" | "ready";
 type ActiveView = "terminals" | "orchestrator";
+type SidePanel = "explorer" | "sessions" | "orchestrator" | null;
+
+interface FileNode {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  children?: FileNode[];
+  expanded?: boolean;
+}
 
 export default function App() {
   const [phase, setPhase] = useState<AppPhase>("loading");
@@ -21,6 +32,12 @@ export default function App() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [agents, setAgents] = useState<Array<{ name: string; binary: string; status: string }>>([]);
   const { connected, port, health } = useBackend();
+
+  // File explorer state
+  const [sidePanel, setSidePanel] = useState<SidePanel>("sessions");
+  const [fileTree, setFileTree] = useState<FileNode | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
 
   const backendPort = port || 8080;
   const baseUrl = `http://127.0.0.1:${backendPort}`;
@@ -142,16 +159,101 @@ export default function App() {
     setPhase("ready");
   }, []);
 
+  // Drag & Drop handlers for folder drop
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes("Files")) {
+      setIsDragOver(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) {
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragOver(false);
+
+    const items = e.dataTransfer.items;
+    if (!items || items.length === 0) return;
+
+    // Use webkitGetAsEntry to traverse directories
+    const entries: FileSystemEntry[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const entry = items[i].webkitGetAsEntry?.();
+      if (entry) entries.push(entry);
+    }
+
+    if (entries.length === 0) return;
+
+    // Traverse the first directory entry
+    const allPaths: string[] = [];
+    let rootName = "dropped-folder";
+
+    const traverseEntry = async (entry: FileSystemEntry, basePath: string): Promise<void> => {
+      if (entry.isFile) {
+        allPaths.push(basePath + entry.name);
+      } else if (entry.isDirectory) {
+        if (!basePath) rootName = entry.name;
+        const dirReader = (entry as FileSystemDirectoryEntry).createReader();
+        const readEntries = (): Promise<FileSystemEntry[]> =>
+          new Promise((resolve) => dirReader.readEntries(resolve));
+
+        let batch = await readEntries();
+        while (batch.length > 0) {
+          for (const child of batch) {
+            await traverseEntry(child, basePath + entry.name + "/");
+          }
+          batch = await readEntries();
+        }
+      }
+    };
+
+    for (const entry of entries) {
+      await traverseEntry(entry, "");
+    }
+
+    if (allPaths.length > 0 || entries.some(e => e.isDirectory)) {
+      const tree = buildFileTree(allPaths, rootName);
+      setFileTree(tree);
+      setSidePanel("explorer");
+    }
+  }, []);
+
+  const handlePanelToggle = useCallback((panel: "explorer" | "sessions" | "orchestrator") => {
+    setSidePanel((prev) => (prev === panel ? null : panel));
+    if (panel === "orchestrator") {
+      setActiveView("orchestrator");
+    } else {
+      setActiveView("terminals");
+    }
+  }, []);
+
   if (phase === "loading") {
     return (
-      <div className="h-full w-full flex items-center justify-center bg-surface">
+      <div className="h-full w-full flex items-center justify-center bg-[#0B0B0B]">
         <div className="text-center">
-          <div className="text-2xl font-bold text-accent mb-2">IA-Hub</div>
-          <div className="text-status-idle text-sm">Connecting to backend...</div>
-          <div className="mt-4 w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin mx-auto" />
+          <div className="text-2xl font-bold text-[#007acc] mb-2 tracking-tight">IA-Hub</div>
+          <div className="text-[#7A7A7A] text-sm">Connecting to backend...</div>
+          <div className="mt-4 w-7 h-7 border-2 border-[#007acc] border-t-transparent rounded-full animate-spin mx-auto" />
           <button
             onClick={() => setPhase("ready")}
-            className="mt-6 px-4 py-1.5 text-xs text-gray-500 hover:text-gray-300 border border-[var(--border-color)] rounded-lg hover:border-gray-500 transition-colors"
+            className="mt-6 px-4 py-1.5 text-xs text-[#7A7A7A] hover:text-[#C9C9C9] border border-[#232323] rounded-lg hover:border-[#555] transition-colors"
           >
             Skip → Enter Panel
           </button>
@@ -165,7 +267,25 @@ export default function App() {
   }
 
   return (
-    <div className="h-full w-full flex flex-col bg-surface overflow-hidden">
+    <div
+      className="h-full w-full flex flex-col bg-[#0B0B0B] overflow-hidden relative"
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {/* Drop overlay */}
+      {isDragOver && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#0B0B0B]/90 backdrop-blur-sm pointer-events-none">
+          <div className="drop-overlay border-2 border-dashed border-[#007acc] rounded-xl p-12 text-center">
+            <div className="text-4xl mb-3">📂</div>
+            <div className="text-[#DCDCDC] text-lg font-medium">Solte a pasta aqui</div>
+            <div className="text-[#7A7A7A] text-sm mt-1">para explorar os arquivos</div>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
       <Header
         layout={layout}
         onLayoutChange={setLayout}
@@ -175,38 +295,69 @@ export default function App() {
         accounts={accounts}
         onSpawnSession={handleSpawnSession}
       />
+
+      {/* Main body */}
       <div className="flex-1 flex overflow-hidden">
-        <Sidebar
-          projects={projects}
-          accounts={accounts}
-          activeProjectId={activeProjectId}
-          onProjectSelect={setActiveProjectId}
-          onAddAccount={handleAddAccount}
+        {/* Activity Bar */}
+        <ActivityBar
+          activePanel={sidePanel}
+          onPanelToggle={handlePanelToggle}
+          hasFolder={fileTree !== null}
         />
-        <main className="flex-1 overflow-hidden flex flex-col">
+
+        {/* Side Panel */}
+        {sidePanel && (
+          <div className="w-[var(--sidebar-width)] border-r border-[#171717] flex flex-col shrink-0 overflow-hidden sidebar-transition">
+            {sidePanel === "explorer" ? (
+              <FileExplorer
+                rootFolder={fileTree}
+                onClose={() => setSidePanel(null)}
+              />
+            ) : sidePanel === "sessions" ? (
+              <Sidebar
+                projects={projects}
+                accounts={accounts}
+                activeProjectId={activeProjectId}
+                onProjectSelect={setActiveProjectId}
+                onAddAccount={handleAddAccount}
+              />
+            ) : null}
+          </div>
+        )}
+
+        {/* Main content */}
+        <main className="flex-1 overflow-hidden flex flex-col min-w-0">
           {/* View switcher tabs */}
-          <div className="h-8 flex items-center px-2 gap-1 bg-surface-raised border-b border-[var(--border-color)] shrink-0">
+          <div className="h-8 flex items-center px-2 gap-0.5 bg-[#121212] border-b border-[#171717] shrink-0">
             <button
-              onClick={() => setActiveView("terminals")}
-              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+              onClick={() => { setActiveView("terminals"); }}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
                 activeView === "terminals"
-                  ? "bg-accent/20 text-accent"
-                  : "text-gray-400 hover:text-gray-200"
+                  ? "bg-[#1A1A1A] text-[#DCDCDC] border border-[#232323]"
+                  : "text-[#7A7A7A] hover:text-[#C9C9C9] hover:bg-[#161616]"
               }`}
             >
               Terminals
+              {sessions.length > 0 && (
+                <span className="ml-1.5 text-[10px] opacity-60">{sessions.length}</span>
+              )}
             </button>
             <button
-              onClick={() => setActiveView("orchestrator")}
-              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+              onClick={() => { setActiveView("orchestrator"); }}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
                 activeView === "orchestrator"
-                  ? "bg-accent/20 text-accent"
-                  : "text-gray-400 hover:text-gray-200"
+                  ? "bg-[#1A1A1A] text-[#DCDCDC] border border-[#232323]"
+                  : "text-[#7A7A7A] hover:text-[#C9C9C9] hover:bg-[#161616]"
               }`}
             >
               Orchestrator
             </button>
+            <div className="flex-1" />
+            <span className="text-[10px] text-[#555] mr-2">
+              {fileTree ? `📁 ${fileTree.name}` : "Arraste uma pasta para explorar"}
+            </span>
           </div>
+
           {/* Active view content */}
           <div className="flex-1 overflow-hidden p-[var(--panel-gap)]">
             {activeView === "terminals" ? (
