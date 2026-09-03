@@ -9,6 +9,7 @@ import { OrchestratorView } from "./components/OrchestratorView";
 import { FileExplorer, buildFileTree } from "./components/FileExplorer";
 import { ActivityBar } from "./components/ActivityBar";
 import { CommandPalette } from "./components/CommandPalette";
+import { ViewTransition } from "./components/AnimatedLayout";
 import { useBackend } from "./hooks/useBackend";
 import type { SessionInfo, ProjectInfo, ProviderAccountInfo } from "./lib/types";
 
@@ -377,23 +378,25 @@ export default function App() {
 
           {/* Active view content */}
           <div className="flex-1 overflow-hidden p-[var(--panel-gap)]">
-            {activeView === "terminals" ? (
-              layout === "grid" && sessions.length >= 2 ? (
-                <ResizablePanelGrid sessions={sessions} port={port || 8080} />
-              ) : layout === "spotlight" && sessions.length >= 2 ? (
-                <DraggablePanelGrid sessions={sessions} port={port || 8080} onReorder={setSessions} />
+            <ViewTransition viewKey={activeView}>
+              {activeView === "terminals" ? (
+                layout === "grid" && sessions.length >= 2 ? (
+                  <ResizablePanelGrid sessions={sessions} port={port || 8080} />
+                ) : layout === "spotlight" && sessions.length >= 2 ? (
+                  <DraggablePanelGrid sessions={sessions} port={port || 8080} onReorder={setSessions} />
+                ) : (
+                  <PanelGrid
+                    sessions={sessions}
+                    layout={layout}
+                    port={port || 8080}
+                    agents={agents}
+                    onSpawnSession={handleSpawnSession}
+                  />
+                )
               ) : (
-                <PanelGrid
-                  sessions={sessions}
-                  layout={layout}
-                  port={port || 8080}
-                  agents={agents}
-                  onSpawnSession={handleSpawnSession}
-                />
-              )
-            ) : (
-              <OrchestratorView port={port || 8080} />
-            )}
+                <OrchestratorView port={port || 8080} />
+              )}
+            </ViewTransition>
           </div>
         </main>
       </div>
