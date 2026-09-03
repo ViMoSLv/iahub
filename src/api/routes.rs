@@ -460,14 +460,15 @@ struct OrchestrateRequest {
 }
 
 /// POST /api/orchestrate — decompose an objective into tasks with account assignments.
+/// Uses spawn_blocking for SQLite access (rusqlite::Connection is not Send).
 async fn orchestrate_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<OrchestrateRequest>,
-) -> impl IntoResponse {
+) -> (StatusCode, Json<serde_json::Value>) {
     use crate::orchestrator::{TaskDecomposer, SessionDispatcher};
     use crate::orchestrator::dispatcher::AccountSlot;
 
-    // Decompose the objective into subtasks
+    // Decompose the objective into subtasks (pure CPU, no async needed)
     let tasks = if let Some(role_names) = &req.roles {
         let roles: Vec<crate::orchestrator::decomposer::AgentRole> = role_names
             .iter()
@@ -489,28 +490,37 @@ async fn orchestrate_handler(
         TaskDecomposer::decompose(&req.objective)
     };
 
-    // Build account slots from SQLite-persisted accounts
-    use crate::persistence::repositories::ProviderAccountRepository;
-    use crate::persistence::SqliteStore;
+    // Load account slots from SQLite via spawn_blocking
+    let db_path = state.db_path.clone();
+    let db_result = tokio::task::spawn_blocking(move || {
+        use crate::persistence::repositories::ProviderAccountRepository;
+        use crate::persistence::SqliteStore;
 
-    let slots: Vec<AccountSlot> = if let Ok(mut store) = SqliteStore::open(&state.db_path) {
-        if let Ok(tx) = store.transaction() {
-            ProviderAccountRepository::list(&tx, None)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|a| AccountSlot {
-                    account_id: a.id.0,
-                    provider: a.provider_kind,
-                    max_concurrent: a.max_concurrent_sessions as u32,
-                    active_sessions: 0,
-                    available: a.status == "ACTIVE",
-                })
-                .collect()
-        } else {
-            Vec::new()
+        let mut store = SqliteStore::open(&db_path)
+            .map_err(|e| format!("DB open failed: {}", e))?;
+        let tx = store.transaction()
+            .map_err(|e| format!("TX failed: {}", e))?;
+        let accounts = ProviderAccountRepository::list(&tx, None)
+            .map_err(|e| format!("list failed: {}", e))?;
+
+        let slots: Vec<AccountSlot> = accounts.into_iter().map(|a| AccountSlot {
+            account_id: a.id.0,
+            provider: a.provider_kind,
+            max_concurrent: a.max_concurrent_sessions as u32,
+            active_sessions: 0,
+            available: a.status == "ACTIVE",
+        }).collect();
+        Ok::<_, String>(slots)
+    }).await;
+
+    let slots = match db_result {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e })));
         }
-    } else {
-        Vec::new()
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": format!("task join: {}", e) })));
+        }
     };
 
     // Attempt dispatch
