@@ -34,6 +34,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/agents", get(list_agents_handler))
         .route("/api/accounts", get(list_accounts_handler).post(create_account_handler))
         .route("/api/orchestrate", axum::routing::post(orchestrate_handler))
+        .route("/api/projects", get(list_projects_handler).post(create_project_handler))
         .route("/ws/session/:id", get(ws_upgrade_handler))
         .with_state(state)
 }
@@ -582,6 +583,101 @@ async fn orchestrate_handler(
     };
 
     (StatusCode::OK, Json(result))
+}
+
+// ── Project CRUD handlers ───────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct CreateProjectRequest {
+    name: String,
+    path: String,
+}
+
+/// GET /api/projects — list all registered projects from SQLite.
+async fn list_projects_handler(
+    State(state): State<Arc<AppState>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let db_path = state.db_path.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        use crate::persistence::repositories::ProjectRepository;
+        use crate::persistence::SqliteStore;
+
+        let mut store = SqliteStore::open(&db_path)
+            .map_err(|e| format!("DB open failed: {}", e))?;
+        let tx = store.transaction()
+            .map_err(|e| format!("TX failed: {}", e))?;
+        let projects = ProjectRepository::list_all(&tx)
+            .map_err(|e| format!("list failed: {}", e))?;
+
+        let items: Vec<serde_json::Value> = projects.into_iter().map(|p| {
+            serde_json::json!({
+                "id": p.id.0,
+                "name": p.name,
+                "path": p.canonical_path,
+                "session_count": 0,
+            })
+        }).collect();
+        Ok::<_, String>(items)
+    }).await;
+
+    match result {
+        Ok(Ok(items)) => (StatusCode::OK, Json(serde_json::json!(items))),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("task join: {}", e)}))),
+    }
+}
+
+/// POST /api/projects — register a new project (persisted to SQLite).
+async fn create_project_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateProjectRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let db_path = state.db_path.clone();
+    let name = req.name.clone();
+    let path = req.path.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        use crate::persistence::repositories::ProjectRepository;
+        use crate::persistence::SqliteStore;
+        use crate::domain::ProjectId;
+
+        let mut store = SqliteStore::open(&db_path)
+            .map_err(|e| format!("DB open failed: {}", e))?;
+        let tx = store.transaction()
+            .map_err(|e| format!("TX failed: {}", e))?;
+
+        let id = ProjectId(uuid::Uuid::new_v4().to_string());
+        let now = chrono::Utc::now().timestamp();
+
+        use crate::persistence::repositories::project::ProjectRow;
+        use crate::domain::Timestamp;
+
+        ProjectRepository::insert(&tx, &ProjectRow {
+            id: id.clone(),
+            name: name.clone(),
+            repository_identity: String::new(),
+            canonical_path: path.clone(),
+            target_branch: "main".to_string(),
+            created_at: Timestamp(now.to_string()),
+            updated_at: Timestamp(now.to_string()),
+            version: crate::domain::EntityVersion(1),
+        }).map_err(|e| format!("insert failed: {}", e))?;
+
+        tx.commit().map_err(|e| format!("commit failed: {}", e))?;
+
+        Ok::<_, String>(serde_json::json!({
+            "id": id.0,
+            "name": name,
+            "path": path,
+            "session_count": 0,
+        }))
+    }).await;
+
+    match result {
+        Ok(Ok(val)) => (StatusCode::CREATED, Json(val)),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("task join: {}", e)}))),
+    }
 }
 
 #[cfg(test)]

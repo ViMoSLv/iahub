@@ -112,6 +112,35 @@ impl ProjectRepository {
         }
     }
 
+    /// List all projects in the database.
+    pub fn list_all(tx: &Transaction) -> Result<Vec<ProjectRow>, PersistenceError> {
+        let mut stmt = tx.conn().prepare(
+            "SELECT id, name, repository_identity, canonical_path, target_branch, created_at, updated_at, version
+             FROM projects ORDER BY created_at DESC",
+        ).map_err(|e| PersistenceError::Transaction { source: e })?;
+
+        let rows = stmt.query_map([], |row| {
+            let created_at_i64: i64 = row.get(5)?;
+            let updated_at_i64: i64 = row.get(6)?;
+            Ok(ProjectRow {
+                id: ProjectId(row.get::<_, String>(0)?),
+                name: row.get(1)?,
+                repository_identity: row.get(2)?,
+                canonical_path: row.get(3)?,
+                target_branch: row.get(4)?,
+                created_at: Timestamp(created_at_i64.to_string()),
+                updated_at: Timestamp(updated_at_i64.to_string()),
+                version: EntityVersion(row.get(7)?),
+            })
+        }).map_err(|e| PersistenceError::Transaction { source: e })?;
+
+        let mut projects = Vec::new();
+        for row in rows {
+            projects.push(row.map_err(|e| PersistenceError::Transaction { source: e })?);
+        }
+        Ok(projects)
+    }
+
     /// Update a project with optimistic concurrency control.
     /// Returns Err(VersionConflict) if the stored version does not match expected.
     pub fn update(
