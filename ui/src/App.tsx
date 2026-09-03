@@ -6,6 +6,7 @@ import { Onboarding } from "./pages/Onboarding";
 import { OrchestratorView } from "./components/OrchestratorView";
 import { FileExplorer, buildFileTree } from "./components/FileExplorer";
 import { ActivityBar } from "./components/ActivityBar";
+import { CommandPalette } from "./components/CommandPalette";
 import { useBackend } from "./hooks/useBackend";
 import type { SessionInfo, ProjectInfo, ProviderAccountInfo } from "./lib/types";
 
@@ -293,6 +294,12 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Command Palette (Ctrl+K) */}
+      <CommandPalette
+        onSpawnSession={(agent) => handleSpawnSession(agent)}
+        onImportProject={() => {}}
+      />
 
       {/* Header */}
       <Header
