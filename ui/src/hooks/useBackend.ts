@@ -7,35 +7,47 @@ interface BackendState {
   port: number;
 }
 
-const BACKEND_PORT = 8080;
+const CANDIDATE_PORTS = [8080, 8081, 8082, 8083, 8084, 8085];
 const POLL_INTERVAL_MS = 1500;
 
 export function useBackend(): BackendState {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [connected, setConnected] = useState(false);
+  const [port, setPort] = useState<number>(CANDIDATE_PORTS[0]);
   const mountedRef = useRef(true);
+  const discoveredPortRef = useRef<number | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
 
     const poll = async () => {
-      try {
-        const resp = await fetch(`http://127.0.0.1:${BACKEND_PORT}/health`, {
-          signal: AbortSignal.timeout(3000),
-        });
+      // If we already discovered the port, only poll that one
+      const portsToTry = discoveredPortRef.current
+        ? [discoveredPortRef.current]
+        : CANDIDATE_PORTS;
+
+      for (const p of portsToTry) {
         if (!mountedRef.current) return;
-        if (resp.ok) {
-          const data: HealthResponse = await resp.json();
+        try {
+          const resp = await fetch(`http://127.0.0.1:${p}/health`, {
+            signal: AbortSignal.timeout(2000),
+          });
           if (!mountedRef.current) return;
-          setHealth(data);
-          setConnected(true);
-        } else {
-          setConnected(false);
+          if (resp.ok) {
+            const data: HealthResponse = await resp.json();
+            if (!mountedRef.current) return;
+            discoveredPortRef.current = p;
+            setPort(p);
+            setHealth(data);
+            setConnected(true);
+            return; // found it, stop trying other ports
+          }
+        } catch {
+          // this port is not responding, try next
         }
-      } catch {
-        if (!mountedRef.current) return;
-        setConnected(false);
       }
+      if (!mountedRef.current) return;
+      setConnected(false);
     };
 
     // Immediate first attempt
@@ -50,5 +62,5 @@ export function useBackend(): BackendState {
     };
   }, []);
 
-  return { health, connected, port: BACKEND_PORT };
+  return { health, connected, port };
 }
