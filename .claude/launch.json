@@ -3,11 +3,9 @@
   "configurations": [
     {
       "name": "iahub-ui",
-      "runtimeExecutable": "npm",
-      "args": ["run", "dev"],
-      "cwd": "ui",
       "url": "http://localhost:1420",
-      "port": 1420
+      "port": 1420,
+      "autoPort": false
     }
   ]
 }
