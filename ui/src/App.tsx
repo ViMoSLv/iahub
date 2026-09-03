@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { PanelGrid } from "./components/PanelGrid";
+import { ResizablePanelGrid } from "./components/ResizablePanelGrid";
 import { Header } from "./components/Header";
 import { Onboarding } from "./pages/Onboarding";
 import { OrchestratorView } from "./components/OrchestratorView";
@@ -376,13 +377,17 @@ export default function App() {
           {/* Active view content */}
           <div className="flex-1 overflow-hidden p-[var(--panel-gap)]">
             {activeView === "terminals" ? (
-              <PanelGrid
-                sessions={sessions}
-                layout={layout}
-                port={port || 8080}
-                agents={agents}
-                onSpawnSession={handleSpawnSession}
-              />
+              layout === "grid" && sessions.length >= 2 ? (
+                <ResizablePanelGrid sessions={sessions} port={port || 8080} />
+              ) : (
+                <PanelGrid
+                  sessions={sessions}
+                  layout={layout}
+                  port={port || 8080}
+                  agents={agents}
+                  onSpawnSession={handleSpawnSession}
+                />
+              )
             ) : (
               <OrchestratorView port={port || 8080} />
             )}
