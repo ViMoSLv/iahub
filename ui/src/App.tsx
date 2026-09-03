@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { PanelGrid } from "./components/PanelGrid";
 import { ResizablePanelGrid } from "./components/ResizablePanelGrid";
+import { DraggablePanelGrid } from "./components/DraggablePanelGrid";
 import { Header } from "./components/Header";
 import { Onboarding } from "./pages/Onboarding";
 import { OrchestratorView } from "./components/OrchestratorView";
@@ -379,6 +380,8 @@ export default function App() {
             {activeView === "terminals" ? (
               layout === "grid" && sessions.length >= 2 ? (
                 <ResizablePanelGrid sessions={sessions} port={port || 8080} />
+              ) : layout === "spotlight" && sessions.length >= 2 ? (
+                <DraggablePanelGrid sessions={sessions} port={port || 8080} onReorder={setSessions} />
               ) : (
                 <PanelGrid
                   sessions={sessions}
