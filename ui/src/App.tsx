@@ -10,6 +10,7 @@ import { FileExplorer, buildFileTree } from "./components/FileExplorer";
 import { ActivityBar } from "./components/ActivityBar";
 import { CommandPalette } from "./components/CommandPalette";
 import { ViewTransition } from "./components/AnimatedLayout";
+import { LogViewer, generateDemoLogs } from "./components/LogViewer";
 import { useBackend } from "./hooks/useBackend";
 import type { SessionInfo, ProjectInfo, ProviderAccountInfo } from "./lib/types";
 
@@ -35,6 +36,8 @@ export default function App() {
   const [accounts, setAccounts] = useState<ProviderAccountInfo[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [agents, setAgents] = useState<Array<{ name: string; binary: string; status: string }>>([]);
+  const [logs] = useState(() => generateDemoLogs(500));
+  const [showLogs, setShowLogs] = useState(false);
   const { connected, port, health } = useBackend();
 
   // File explorer state
@@ -370,33 +373,52 @@ export default function App() {
             >
               Orchestrator
             </button>
+            <button
+              onClick={() => setShowLogs((v) => !v)}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                showLogs
+                  ? "bg-[#1A1A1A] text-[#DCDCDC] border border-[#232323]"
+                  : "text-[#7A7A7A] hover:text-[#C9C9C9] hover:bg-[#161616]"
+              }`}
+            >
+              Logs
+              <span className="ml-1.5 text-[10px] opacity-60">{logs.length}</span>
+            </button>
             <div className="flex-1" />
             <span className="text-[10px] text-[#555] mr-2">
               {fileTree ? `📁 ${fileTree.name}` : "Arraste uma pasta para explorar"}
             </span>
           </div>
 
-          {/* Active view content */}
-          <div className="flex-1 overflow-hidden p-[var(--panel-gap)]">
-            <ViewTransition viewKey={activeView}>
-              {activeView === "terminals" ? (
-                layout === "grid" && sessions.length >= 2 ? (
-                  <ResizablePanelGrid sessions={sessions} port={port || 8080} />
-                ) : layout === "spotlight" && sessions.length >= 2 ? (
-                  <DraggablePanelGrid sessions={sessions} port={port || 8080} onReorder={setSessions} />
+          {/* Active view content + optional log panel */}
+          <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+            <div className="flex-1 overflow-hidden p-[var(--panel-gap)] min-h-0">
+              <ViewTransition viewKey={activeView}>
+                {activeView === "terminals" ? (
+                  layout === "grid" && sessions.length >= 2 ? (
+                    <ResizablePanelGrid sessions={sessions} port={port || 8080} />
+                  ) : layout === "spotlight" && sessions.length >= 2 ? (
+                    <DraggablePanelGrid sessions={sessions} port={port || 8080} onReorder={setSessions} />
+                  ) : (
+                    <PanelGrid
+                      sessions={sessions}
+                      layout={layout}
+                      port={port || 8080}
+                      agents={agents}
+                      onSpawnSession={handleSpawnSession}
+                    />
+                  )
                 ) : (
-                  <PanelGrid
-                    sessions={sessions}
-                    layout={layout}
-                    port={port || 8080}
-                    agents={agents}
-                    onSpawnSession={handleSpawnSession}
-                  />
-                )
-              ) : (
-                <OrchestratorView port={port || 8080} />
-              )}
-            </ViewTransition>
+                  <OrchestratorView port={port || 8080} />
+                )}
+              </ViewTransition>
+            </div>
+            {/* Log viewer panel (toggleable) */}
+            {showLogs && (
+              <div className="h-48 shrink-0 border-t border-[#171717]">
+                <LogViewer logs={logs} autoScroll={true} />
+              </div>
+            )}
           </div>
         </main>
       </div>
