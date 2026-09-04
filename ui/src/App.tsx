@@ -12,6 +12,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { ViewTransition } from "./components/AnimatedLayout";
 import { LogViewer, generateDemoLogs } from "./components/LogViewer";
 import { useBackend } from "./hooks/useBackend";
+import { useLayoutPersistence } from "./hooks/useLayoutPersistence";
 import type { SessionInfo, ProjectInfo, ProviderAccountInfo } from "./lib/types";
 
 type LayoutMode = "grid" | "spotlight" | "sidebar";
@@ -38,7 +39,23 @@ export default function App() {
   const [agents, setAgents] = useState<Array<{ name: string; binary: string; status: string }>>([]);
   const [logs] = useState(() => generateDemoLogs(500));
   const [showLogs, setShowLogs] = useState(false);
+  const [panelOrder, setPanelOrder] = useState<string[]>([]);
+  const [panelSizes, setPanelSizes] = useState<Record<string, number[]>>({});
   const { connected, port, health } = useBackend();
+
+  // Persist and restore layout state across reloads
+  useLayoutPersistence(
+    layout,
+    panelOrder,
+    panelSizes,
+    activeView,
+    showLogs,
+    setLayout,
+    setPanelOrder,
+    setPanelSizes,
+    setActiveView,
+    setShowLogs,
+  );
 
   // File explorer state
   const [sidePanel, setSidePanel] = useState<SidePanel>("sessions");
