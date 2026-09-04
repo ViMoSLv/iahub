@@ -56,7 +56,7 @@ fn main() {
                     app_handle.path()
                         .resource_dir()
                         .map(|p| p.join("mega-brain-server.exe"))
-                        .unwrap_or_else(|| std::path::PathBuf::from("mega-brain-server.exe"))
+                        .unwrap_or_else(|_| std::path::PathBuf::from("mega-brain-server.exe"))
                 };
 
                 eprintln!("[Tauri] Looking for server at: {}", server_bin.display());

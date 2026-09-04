@@ -23,6 +23,16 @@ workspaces/
 .env
 .env.*
 
-# Node / frontend deps (if UI added later)
+# Node / frontend deps
 node_modules/
-dist/.ia-hub/
+ui/dist/
+
+# Tauri build artifacts
+ui/src-tauri/target/
+ui/src-tauri/binaries/
+ui/src-tauri/gen/
+
+# Build outputs (keep source, ignore compiled)
+*.exe
+*.msi
+!ui/src-tauri/icons/**
