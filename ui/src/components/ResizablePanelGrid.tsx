@@ -5,9 +5,10 @@ import type { SessionInfo } from "../lib/types";
 interface ResizablePanelGridProps {
   sessions: SessionInfo[];
   port: number;
+  onTerminate?: (sessionId: string) => void;
 }
 
-export function ResizablePanelGrid({ sessions, port }: ResizablePanelGridProps) {
+export function ResizablePanelGrid({ sessions, port, onTerminate }: ResizablePanelGridProps) {
   if (sessions.length === 0) {
     return (
       <div className="h-full flex items-center justify-center text-[#555] text-sm">
@@ -67,7 +68,7 @@ export function ResizablePanelGrid({ sessions, port }: ResizablePanelGridProps) 
         <Group orientation="vertical" className="h-full">
           {leftSessions.map((session) => (
             <Panel key={session.id} defaultSize={100 / leftSessions.length} minSize={15}>
-              <TerminalPanel session={session} port={port} isActive={true} />
+              <TerminalPanel session={session} port={port} isActive={true} onTerminate={onTerminate} />
             </Panel>
           ))}
         </Group>
@@ -76,7 +77,7 @@ export function ResizablePanelGrid({ sessions, port }: ResizablePanelGridProps) 
         <Group orientation="vertical" className="h-full">
           {rightSessions.map((session) => (
             <Panel key={session.id} defaultSize={100 / rightSessions.length} minSize={15}>
-              <TerminalPanel session={session} port={port} isActive={true} />
+              <TerminalPanel session={session} port={port} isActive={true} onTerminate={onTerminate} />
             </Panel>
           ))}
         </Group>

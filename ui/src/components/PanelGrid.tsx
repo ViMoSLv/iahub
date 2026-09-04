@@ -15,9 +15,10 @@ interface PanelGridProps {
   agents: AgentInfo[];
   onSpawnSession: (agentBinary: string, accountId?: string) => void;
   onReorderSessions?: (orderedIds: string[]) => void;
+  onTerminate?: (sessionId: string) => void;
 }
 
-export function PanelGrid({ sessions, layout, port, agents, onSpawnSession, onReorderSessions }: PanelGridProps) {
+export function PanelGrid({ sessions, layout, port, agents, onSpawnSession, onReorderSessions, onTerminate }: PanelGridProps) {
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [orderedIds, setOrderedIds] = useState<string[]>(sessions.map(s => s.id));
   const [ctrlHeld, setCtrlHeld] = useState(false);
@@ -199,6 +200,7 @@ export function PanelGrid({ sessions, layout, port, agents, onSpawnSession, onRe
               session={session}
               port={port}
               isActive={focusedId === session.id || focusedId === null}
+              onTerminate={onTerminate}
             />
           </div>
         ))}
@@ -230,7 +232,7 @@ export function PanelGrid({ sessions, layout, port, agents, onSpawnSession, onRe
           onDrop={(e) => handleDrop(e, spotlight.id)}
           onClick={() => setFocusedId(spotlight.id)}
         >
-          <TerminalPanel session={spotlight} port={port} isActive={true} />
+          <TerminalPanel session={spotlight} port={port} isActive={true} onTerminate={onTerminate} />
         </div>
         {others.length > 0 && (
           <div className="w-[35%] flex flex-col gap-1 min-h-0">
@@ -286,6 +288,7 @@ export function PanelGrid({ sessions, layout, port, agents, onSpawnSession, onRe
             session={session}
             port={port}
             isActive={focusedId === session.id || focusedId === null}
+            onTerminate={onTerminate}
           />
         </div>
       ))}

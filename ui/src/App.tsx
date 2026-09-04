@@ -171,6 +171,18 @@ export default function App() {
     [baseUrl],
   );
 
+  const handleTerminateSession = useCallback(
+    async (sessionId: string) => {
+      try {
+        await fetch(`${baseUrl}/api/sessions/${sessionId}`, { method: "DELETE" });
+        setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      } catch {
+        // ignore
+      }
+    },
+    [baseUrl],
+  );
+
   const handleOnboardingComplete = useCallback(() => {
     setPhase("ready");
   }, []);
@@ -396,9 +408,9 @@ export default function App() {
               <ViewTransition viewKey={activeView}>
                 {activeView === "terminals" ? (
                   layout === "grid" && sessions.length >= 2 ? (
-                    <ResizablePanelGrid sessions={sessions} port={port || 8080} />
+                    <ResizablePanelGrid sessions={sessions} port={port || 8080} onTerminate={handleTerminateSession} />
                   ) : layout === "spotlight" && sessions.length >= 2 ? (
-                    <DraggablePanelGrid sessions={sessions} port={port || 8080} onReorder={setSessions} />
+                    <DraggablePanelGrid sessions={sessions} port={port || 8080} onReorder={setSessions} onTerminate={handleTerminateSession} />
                   ) : (
                     <PanelGrid
                       sessions={sessions}
@@ -406,6 +418,7 @@ export default function App() {
                       port={port || 8080}
                       agents={agents}
                       onSpawnSession={handleSpawnSession}
+                      onTerminate={handleTerminateSession}
                     />
                   )
                 ) : (

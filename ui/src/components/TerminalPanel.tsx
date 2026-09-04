@@ -9,11 +9,12 @@ interface TerminalPanelProps {
   session: SessionInfo;
   port: number;
   isActive: boolean;
+  onTerminate?: (sessionId: string) => void;
 }
 
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
 
-export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
+export function TerminalPanel({ session, port, isActive, onTerminate }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -262,6 +263,15 @@ export function TerminalPanel({ session, port, isActive }: TerminalPanelProps) {
         <button className="text-[#7A7A7A] hover:text-[#DCDCDC] text-xs px-1 transition-colors" title="Expand">
           ⛶
         </button>
+        {onTerminate && (
+          <button
+            className="text-[#7A7A7A] hover:text-[#f44747] text-xs px-1 transition-colors"
+            title="Terminate session"
+            onClick={() => onTerminate(session.id)}
+          >
+            ✕
+          </button>
+        )}
       </div>
       {/* Terminal area */}
       <div className="relative flex-1 min-h-0">

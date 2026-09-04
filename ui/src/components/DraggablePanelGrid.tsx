@@ -21,14 +21,17 @@ interface DraggablePanelGridProps {
   sessions: SessionInfo[];
   port: number;
   onReorder?: (sessions: SessionInfo[]) => void;
+  onTerminate?: (sessionId: string) => void;
 }
 
 function SortablePanel({
   session,
   port,
+  onTerminate,
 }: {
   session: SessionInfo;
   port: number;
+  onTerminate?: (sessionId: string) => void;
 }) {
   const {
     attributes,
@@ -59,7 +62,7 @@ function SortablePanel({
         className="cursor-grab active:cursor-grabbing"
         title="Drag to reorder"
       >
-        <TerminalPanel session={session} port={port} isActive={!isDragging} />
+        <TerminalPanel session={session} port={port} isActive={!isDragging} onTerminate={onTerminate} />
       </div>
     </div>
   );
@@ -69,6 +72,7 @@ export function DraggablePanelGrid({
   sessions,
   port,
   onReorder,
+  onTerminate,
 }: DraggablePanelGridProps) {
   const [items, setItems] = useState(sessions);
 
@@ -122,7 +126,7 @@ export function DraggablePanelGrid({
           }}
         >
           {items.map((session) => (
-            <SortablePanel key={session.id} session={session} port={port} />
+            <SortablePanel key={session.id} session={session} port={port} onTerminate={onTerminate} />
           ))}
         </div>
       </SortableContext>
